@@ -1,0 +1,20 @@
+{
+  "event": "payment.captured",
+  "account_id": "acc_test_001",
+  "created_at": 1700000100,
+  "payload": {
+    "payment": {
+      "id": "pay_test_insufficient_funds_001",
+      "entity": "payment",
+      "amount": 50000,
+      "currency": "INR",
+      "status": "captured",
+      "order_id": "order_INR_50000",
+      "method": "upi",
+      "captured": true,
+      "email": "customer@example.com",
+      "contact": "+919999999999",
+      "notes": {}
+    }
+  }
+}

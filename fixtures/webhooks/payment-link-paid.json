@@ -1,0 +1,17 @@
+{
+  "event": "payment_link.paid",
+  "account_id": "acc_test_001",
+  "created_at": 1700000200,
+  "payload": {
+    "payment_link": {
+      "id": "plink_test_recovery_001",
+      "entity": "payment_link",
+      "reference_id": "pay_test_insufficient_funds_001",
+      "notes": {
+        "recovery_case_id": "case_test_001"
+      },
+      "amount": 50000,
+      "currency": "INR"
+    }
+  }
+}

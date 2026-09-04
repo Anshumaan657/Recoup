@@ -273,7 +273,7 @@ describe("Persistence Layer", () => {
       );
 
       await expect(
-        updateRecoveryCaseStatus(created.id, RecoveryStatus.recovered)
+        updateRecoveryCaseStatus(created.id, RecoveryStatus.contacted)
       ).rejects.toThrow("Invalid transition");
     });
   });

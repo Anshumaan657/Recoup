@@ -17,11 +17,13 @@ const validTransitions: Record<RecoveryStatus, RecoveryStatus[]> = {
     RecoveryStatus.eligible,
     RecoveryStatus.closed,
     RecoveryStatus.manual_review,
+    RecoveryStatus.recovered,
   ],
   [RecoveryStatus.eligible]: [
     RecoveryStatus.contacted,
     RecoveryStatus.closed,
     RecoveryStatus.manual_review,
+    RecoveryStatus.recovered,
   ],
   [RecoveryStatus.contacted]: [
     RecoveryStatus.recovered,

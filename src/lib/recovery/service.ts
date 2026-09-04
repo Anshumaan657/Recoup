@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { prisma } from "@/lib/db/prisma";
 import {
   RecoveryCase,
@@ -11,7 +12,8 @@ import {
   ListCasesOptions,
   PaginatedResult,
 } from "@/types/domain";
-import { transition, isTerminal } from "@/lib/recovery/state-machine";
+import { transition, isTerminal, applyLateCapture } from "@/lib/recovery/state-machine";
+import { getServerEnv } from "@/lib/validation/env";
 
 function toRecoveryStatus(s: string): RecoveryStatus {
   return s as RecoveryStatus;
@@ -262,6 +264,16 @@ export async function findWebhookReceiptByEventKey(
   return prisma.webhookReceipt.findUnique({ where: { eventKey } });
 }
 
+export async function updateWebhookReceiptOutcome(
+  id: string,
+  outcome: string
+): Promise<WebhookReceipt> {
+  return prisma.webhookReceipt.update({
+    where: { id },
+    data: { outcome },
+  });
+}
+
 export async function queueNotification(
   data: Omit<NotificationOutbox, "id" | "createdAt" | "sentAt">
 ): Promise<NotificationOutbox> {
@@ -276,6 +288,219 @@ export async function markNotificationSent(
     where: { id },
     data: { status: "sent", providerReference, sentAt: new Date() },
   });
+}
+
+export async function handlePaymentFailed(
+  payload: { payment: Record<string, unknown> },
+  rawBody: Buffer,
+  eventKey: string
+): Promise<{ recoveryCase: RecoveryCase; isDuplicate: boolean }> {
+  const payment = payload.payment as Record<string, unknown>;
+  const originalPaymentId = String(payment.id);
+  const orderId = String(payment.order_id);
+  const amount = Number(payment.amount);
+  const currency = String(payment.currency);
+  const customerName = payment.email ? String(payment.email) : null;
+  const customerEmail = payment.email ? String(payment.email) : null;
+  const customerContact = payment.contact ? String(payment.contact) : null;
+  const paymentMethod = payment.method ? String(payment.method) : null;
+  const failureCode = payment.error_code ? String(payment.error_code) : null;
+  const failureReason = payment.error_description ? String(payment.error_description) : null;
+  const failureSource = payment.error_source ? String(payment.error_source) : null;
+  const failureStep = payment.error_step ? String(payment.error_step) : null;
+
+  const env = getServerEnv();
+  const graceExpiresAt = new Date(Date.now() + env.RECOVERY_GRACE_SECONDS * 1000);
+
+  const existingCase = await getRecoveryCaseByOriginalPaymentId(originalPaymentId);
+  if (existingCase) {
+    return { recoveryCase: existingCase, isDuplicate: true };
+  }
+
+  const recoveryCase = await createRecoveryCaseWithAudit(
+    {
+      originalPaymentId,
+      orderId,
+      amount,
+      currency,
+      customerName,
+      customerEmail,
+      customerContact,
+      paymentMethod,
+      failureCode,
+      failureReason,
+      failureSource,
+      failureStep,
+      attemptCount: 0,
+      status: RecoveryStatus.waiting,
+      selectedAction: null,
+      decisionReason: null,
+      confidence: null,
+      requiresApproval: false,
+      graceExpiresAt,
+      paymentLinkId: null,
+      paymentLinkUrl: null,
+      paymentLinkExpiry: null,
+      recoveredAmount: null,
+      recoveredAt: null,
+      stoppedReason: null,
+    },
+    [
+      {
+        eventType: AuditEventType.payment_failed_received,
+        message: `Payment failed: ${failureReason ?? "Unknown reason"}`,
+        metadata: {
+          failureCode,
+          failureSource,
+          failureStep,
+          eventKey,
+          rawBodyHash: sha256(rawBody),
+        },
+      },
+      {
+        eventType: AuditEventType.grace_started,
+        message: `Grace period started, expires at ${graceExpiresAt.toISOString()}`,
+        metadata: { graceSeconds: env.RECOVERY_GRACE_SECONDS },
+      },
+    ]
+  );
+
+  return { recoveryCase, isDuplicate: false };
+}
+
+export async function handlePaymentCaptured(
+  payload: { payment: Record<string, unknown> },
+  eventKey: string
+): Promise<{ recoveryCase: RecoveryCase | null; isDuplicate: boolean; wasAlreadyClosed: boolean }> {
+  const payment = payload.payment as Record<string, unknown>;
+  const originalPaymentId = String(payment.id);
+  const orderId = String(payment.order_id);
+  const amount = Number(payment.amount);
+  const currency = String(payment.currency);
+
+  const existingCase = await getRecoveryCaseByOriginalPaymentId(originalPaymentId);
+  if (!existingCase) {
+    const closedCase = await createRecoveryCaseWithAudit(
+      {
+        originalPaymentId,
+        orderId,
+        amount,
+        currency,
+        customerName: null,
+        customerEmail: null,
+        customerContact: null,
+        paymentMethod: null,
+        failureCode: null,
+        failureReason: null,
+        failureSource: null,
+        failureStep: null,
+        attemptCount: 0,
+        status: RecoveryStatus.closed,
+        selectedAction: null,
+        decisionReason: null,
+        confidence: null,
+        requiresApproval: false,
+        graceExpiresAt: null,
+        paymentLinkId: null,
+        paymentLinkUrl: null,
+        paymentLinkExpiry: null,
+        recoveredAmount: null,
+        recoveredAt: null,
+        stoppedReason: "late_capture",
+      },
+      [
+        {
+          eventType: AuditEventType.late_capture_received,
+          message: "Late capture received before failure event, case closed",
+          metadata: { eventKey, capturedAt: new Date().toISOString() },
+        },
+        {
+          eventType: AuditEventType.recovery_stopped,
+          message: "Recovery stopped due to late capture",
+          metadata: { stoppedReason: "late_capture", eventKey },
+        },
+      ]
+    );
+    return { recoveryCase: closedCase, isDuplicate: false, wasAlreadyClosed: false };
+  }
+
+  if (isTerminal(existingCase.status)) {
+    return { recoveryCase: existingCase, isDuplicate: true, wasAlreadyClosed: true };
+  }
+
+  const lateCaptureStatus = applyLateCapture(existingCase.status);
+  if (!lateCaptureStatus) {
+    return { recoveryCase: existingCase, isDuplicate: false, wasAlreadyClosed: false };
+  }
+
+  const updatedCase = await updateRecoveryCaseStatus(
+    existingCase.id,
+    lateCaptureStatus,
+    undefined,
+    { stoppedReason: "late_capture" }
+  );
+
+  await appendAuditEvent(updatedCase.id, {
+    eventType: AuditEventType.late_capture_received,
+    message: "Late capture received, stopping recovery",
+    metadata: { eventKey, capturedAt: new Date().toISOString() },
+  });
+
+  await appendAuditEvent(updatedCase.id, {
+    eventType: AuditEventType.recovery_stopped,
+    message: "Recovery stopped due to late capture",
+    metadata: { stoppedReason: "late_capture", eventKey },
+  });
+
+  return { recoveryCase: updatedCase, isDuplicate: false, wasAlreadyClosed: false };
+}
+
+export async function handlePaymentLinkPaid(
+  payload: { payment_link: Record<string, unknown> },
+  eventKey: string
+): Promise<{ recoveryCase: RecoveryCase | null; isDuplicate: boolean }> {
+  const paymentLink = payload.payment_link as Record<string, unknown>;
+  const paymentLinkId = String(paymentLink.id);
+  const notes = (paymentLink.notes as Record<string, string>) ?? {};
+  const recoveryCaseId = notes.recovery_case_id;
+
+  if (!recoveryCaseId) {
+    return { recoveryCase: null, isDuplicate: false };
+  }
+
+  const existingCase = await prisma.recoveryCase.findUnique({ where: { id: recoveryCaseId } });
+  if (!existingCase) {
+    return { recoveryCase: null, isDuplicate: false };
+  }
+
+  if (existingCase.status === RecoveryStatus.recovered) {
+    return { recoveryCase: mapRecoveryCase(existingCase), isDuplicate: true };
+  }
+
+  const amount = Number(paymentLink.amount ?? existingCase.amount);
+
+  const updatedCase = await updateRecoveryCaseStatus(
+    existingCase.id,
+    RecoveryStatus.recovered,
+    undefined,
+    {
+      recoveredAmount: amount,
+      recoveredAt: new Date(),
+      paymentLinkId,
+    }
+  );
+
+  await appendAuditEvent(updatedCase.id, {
+    eventType: AuditEventType.recovery_succeeded,
+    message: "Recovery succeeded via payment link",
+    metadata: { paymentLinkId, amount, eventKey },
+  });
+
+  return { recoveryCase: updatedCase, isDuplicate: false };
+}
+
+function sha256(data: Buffer): string {
+  return createHash("sha256").update(data).digest("hex");
 }
 
 export async function resetDemoData(): Promise<void> {

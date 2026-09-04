@@ -19,12 +19,14 @@ describe("State Machine", () => {
       expect(canTransition(RecoveryStatus.waiting, RecoveryStatus.eligible)).toBe(true);
       expect(canTransition(RecoveryStatus.waiting, RecoveryStatus.closed)).toBe(true);
       expect(canTransition(RecoveryStatus.waiting, RecoveryStatus.manual_review)).toBe(true);
+      expect(canTransition(RecoveryStatus.waiting, RecoveryStatus.recovered)).toBe(true);
     });
 
     it("allows valid transitions from eligible", () => {
       expect(canTransition(RecoveryStatus.eligible, RecoveryStatus.contacted)).toBe(true);
       expect(canTransition(RecoveryStatus.eligible, RecoveryStatus.closed)).toBe(true);
       expect(canTransition(RecoveryStatus.eligible, RecoveryStatus.manual_review)).toBe(true);
+      expect(canTransition(RecoveryStatus.eligible, RecoveryStatus.recovered)).toBe(true);
     });
 
     it("allows valid transitions from contacted", () => {
@@ -46,12 +48,10 @@ describe("State Machine", () => {
 
     it("rejects invalid transitions from waiting", () => {
       expect(canTransition(RecoveryStatus.waiting, RecoveryStatus.contacted)).toBe(false);
-      expect(canTransition(RecoveryStatus.waiting, RecoveryStatus.recovered)).toBe(false);
     });
 
     it("rejects invalid transitions from eligible", () => {
       expect(canTransition(RecoveryStatus.eligible, RecoveryStatus.waiting)).toBe(false);
-      expect(canTransition(RecoveryStatus.eligible, RecoveryStatus.recovered)).toBe(false);
     });
 
     it("rejects all transitions from recovered (terminal)", () => {
@@ -180,8 +180,8 @@ describe("State Machine", () => {
       expect(next).toContain(RecoveryStatus.eligible);
       expect(next).toContain(RecoveryStatus.closed);
       expect(next).toContain(RecoveryStatus.manual_review);
+      expect(next).toContain(RecoveryStatus.recovered);
       expect(next).not.toContain(RecoveryStatus.contacted);
-      expect(next).not.toContain(RecoveryStatus.recovered);
     });
 
     it("returns correct next statuses for eligible", () => {

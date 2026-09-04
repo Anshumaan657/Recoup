@@ -1,0 +1,25 @@
+{
+  "event": "payment.failed",
+  "account_id": "acc_test_001",
+  "created_at": 1700000000,
+  "payload": {
+    "payment": {
+      "id": "pay_test_insufficient_funds_001",
+      "entity": "payment",
+      "amount": 50000,
+      "currency": "INR",
+      "status": "failed",
+      "order_id": "order_INR_50000",
+      "method": "upi",
+      "error_code": "INSUFFICIENT_FUNDS",
+      "error_description": "Insufficient balance in account",
+      "error_source": "bank",
+      "error_step": "payment_processing",
+      "error_reason": "insufficient_funds",
+      "captured": false,
+      "email": "customer@example.com",
+      "contact": "+919999999999",
+      "notes": {}
+    }
+  }
+}
