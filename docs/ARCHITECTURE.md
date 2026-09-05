@@ -42,6 +42,22 @@ Single authority for valid status transitions. Terminal states: `recovered`, `cl
 - Policy engine validates against deterministic guardrails
 - Guardrails enforce: grace period, max attempts, opt-out, contact availability, currency, amount limits, approval thresholds
 
+#### LLM Advisory Role
+The LLM (Recovery Agent) is **strictly advisory**:
+- **Proposes only**: The agent outputs a `RecoveryDecision` JSON based on case context
+- **No execution authority**: The agent cannot create payment links, send notifications, or modify state
+- **Redacted context**: Only minimum necessary, non-PII data is sent to the LLM (amount, failure codes, method, attempt count)
+- **Structured output**: Strict JSON schema validated by Zod; invalid output triggers deterministic fallback
+- **Timeout & failure handling**: 10s timeout; network errors, invalid JSON, schema violations, or safety violations all trigger fallback
+
+#### Policy Engine Authority
+The Policy Engine is the **sole authority** for authorization:
+- **Guardrail evaluation**: Runs deterministic checks (grace period, max attempts, currency, contact channels, amount limits, approval thresholds)
+- **Decision validation**: Validates proposed action against guardrails (e.g., payment links require email + ENABLE_RAZORPAY_LINKS)
+- **Final authorization**: Only approved decisions transition the case; rejected decisions are audited with reasons
+- **Fallback integration**: When LLM fails, deterministic fallback rules apply and are audited with `fallbackUsed=true`
+- **Audit trail**: Every decision (proposed, approved, rejected) creates `decision_created`, `decision_rejected`, or `manual_review_requested` audit events with full reasoning
+
 ### 5. Execution (`src/lib/razorpay/`, `src/lib/recovery/service.ts`)
 - Creates Razorpay Payment Links (test mode) or simulates in DEMO_MODE
 - Transactional reservation pattern prevents duplicate actions

@@ -19,6 +19,7 @@ const serverEnvSchema = z.object({
   MAX_RECOVERY_ATTEMPTS: z.coerce.number().int().positive().default(1),
   ENABLE_RAZORPAY_LINKS: strictBoolean.default(false),
   DEMO_MODE: strictBoolean.default(true),
+  APPROVAL_THRESHOLD_PAISE: z.coerce.number().int().positive().default(500000),
 });
 
 const clientEnvSchema = z.object({
