@@ -2,6 +2,8 @@
 
 **Failed-Payment Recovery Autopilot · Razorpay AI Buildathon · Track 3**
 
+**Live Demo:** [https://recoup-recoverai.vercel.app](https://recoup-recoverai.vercel.app)
+
 Recoup turns failed Razorpay payments into bounded, auditable recovery cases for Indian D2C merchants. It verifies provider events, waits through a late-capture grace window, asks an AI agent for a structured recommendation, lets deterministic policy authorize the action, creates a test-mode Payment Link when safe, and stops recovery the moment the original payment succeeds.
 
 The dashboard makes the outcome legible in one screen: revenue at risk, verified revenue recovered, recovery rate, duplicate collections prevented, case-level decisions, and a chronological audit trail.
