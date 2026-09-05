@@ -68,7 +68,8 @@ Copy `.env.example` to `.env` and fill in values:
 
 **Demo Mode Notes:**
 - When `DEMO_MODE=true` (default), AI and Razorpay credentials are optional; deterministic fallbacks are used.
-- `ENABLE_RAZORPAY_LINKS=false` forces simulated links even with valid credentials.
+- `ENABLE_RAZORPAY_LINKS=false` forces deterministic simulated links in demo mode.
+- `ENABLE_RAZORPAY_LINKS=true` plus test credentials calls Razorpay test-mode APIs.
 - All money actions are **TEST MODE ONLY**. No live charges ever occur.
 
 ## Available Scripts
@@ -117,6 +118,14 @@ Key invariants:
 - **At most one notification/action** per case (MVP)
 - **Integer paise** for all amounts
 - **Demo results labeled synthetic** and reproducible
+
+## Recovery Execution
+
+Phase 5 executes only policy-approved cases in the `eligible` state. The executor
+atomically reserves a case before calling Razorpay, uses an idempotent
+`reference_id`, queues no more than one sanitized notification, and records every
+outcome in the audit timeline. Provider failures never record recovered revenue.
+Late capture closes the case and cancels pending notification delivery.
 
 ## Razorpay Test Mode Webhook Setup
 

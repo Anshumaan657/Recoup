@@ -79,7 +79,7 @@ model WebhookReceipt {
 
 model NotificationOutbox {
   id                String   @id @default(cuid())
-  recoveryCaseId    String   @map("recovery_case_id")
+  recoveryCaseId    String   @unique @map("recovery_case_id")
   channel           String
   recipient         String
   message           String
@@ -90,7 +90,6 @@ model NotificationOutbox {
 
   recoveryCase      RecoveryCase @relation(fields: [recoveryCaseId], references: [id], onDelete: Cascade)
 
-  @@index([recoveryCaseId])
   @@index([status])
   @@index([createdAt])
   @@map("notification_outbox")

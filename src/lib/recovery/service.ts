@@ -507,6 +507,14 @@ export async function handlePaymentCapturedInTransaction(
         },
       });
 
+      await tx.notificationOutbox.updateMany({
+        where: {
+          recoveryCaseId: updatedCase.id,
+          status: "pending",
+        },
+        data: { status: "cancelled" },
+      });
+
       await tx.auditEvent.createMany({
         data: [
           {
@@ -583,6 +591,47 @@ export async function handlePaymentLinkPaidInTransaction(
           data: { outcome: "duplicate" },
         });
         return { outcome: "duplicate", caseId: existingCase.id, isDuplicate: true };
+      }
+
+      if (existingCase.paymentLinkId && existingCase.paymentLinkId !== paymentLinkId) {
+        await tx.recoveryCase.update({
+          where: { id: existingCase.id },
+          data: {
+            status: RecoveryStatus.manual_review,
+            selectedAction: RecoveryAction.manual_review,
+            requiresApproval: true,
+            decisionReason: "Payment link identifier mismatch",
+          },
+        });
+        await tx.auditEvent.createMany({
+          data: [
+            {
+              recoveryCaseId: existingCase.id,
+              eventType: AuditEventType.provider_error,
+              message: "Payment link identifier mismatch",
+              metadata: JSON.stringify({
+                expectedPaymentLinkId: existingCase.paymentLinkId,
+                receivedPaymentLinkId: paymentLinkId,
+                eventKey,
+              }),
+            },
+            {
+              recoveryCaseId: existingCase.id,
+              eventType: AuditEventType.manual_review_requested,
+              message: "Manual review required for payment link identifier mismatch",
+              metadata: JSON.stringify({ reason: "payment_link_id_mismatch", eventKey }),
+            },
+          ],
+        });
+        await tx.webhookReceipt.update({
+          where: { id: receipt.id },
+          data: { outcome: "payment_link_id_mismatch" },
+        });
+        return {
+          outcome: "payment_link_id_mismatch",
+          caseId: existingCase.id,
+          isDuplicate: false,
+        };
       }
 
       const webhookAmount = paymentLink.amount ? Number(paymentLink.amount) : null;
