@@ -22,9 +22,10 @@
 ## Core Components
 
 ### 1. Webhook Ingestion (`src/app/webhooks/razorpay/route.ts`)
-- Verifies HMAC-SHA256 signatures using `RAZORPAY_WEBHOOK_SECRET`
+- Verifies HMAC-SHA256 signatures using `RAZORPAY_WEBHOOK_SECRET` (HTTP 401 for invalid/missing)
 - Validates payload with Zod schemas
-- Idempotent via `WebhookReceipt` table (eventKey = providerEventId or hash)
+- Idempotent via `WebhookReceipt` table (eventKey = provider event.id or computed hash)
+- Atomic transactions for all supported events
 - Creates `RecoveryCase` on `payment.failed`, handles `payment.captured` (late capture), `payment_link.paid`
 
 ### 2. Recovery Domain (`src/types/domain.ts`, `prisma/schema.prisma`)
@@ -139,7 +140,8 @@ Single authority for valid status transitions. Terminal states: `recovered`, `cl
 
 | Scenario | Handling |
 |----------|----------|
-| Invalid webhook signature | 400 response, no persistence |
+| Invalid webhook signature | 401 response, no persistence |
+| Missing webhook signature | 401 response, no persistence |
 | Duplicate webhook | Return original outcome, no duplicate case |
 | LLM timeout/invalid JSON | Fallback rules, audit `fallbackUsed=true` |
 | Payment Link creation fails | `provider_error` audit, retry-safe state |

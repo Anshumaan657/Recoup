@@ -1,29 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db/prisma";
 import { getServerEnv } from "@/lib/validation/env";
 import { verifyRazorpaySignature } from "@/lib/razorpay/signatures";
 import { isSupportedEvent, getSchemaForEvent, SupportedWebhookEvent } from "@/lib/validation/webhooks";
 import {
-  handlePaymentFailed,
-  handlePaymentCaptured,
-  handlePaymentLinkPaid,
-  createWebhookReceipt,
+  handlePaymentFailedInTransaction,
+  handlePaymentCapturedInTransaction,
+  handlePaymentLinkPaidInTransaction,
   findWebhookReceiptByEventKey,
-  updateWebhookReceiptOutcome,
 } from "@/lib/recovery/service";
 import { createHash } from "crypto";
+import { Prisma } from "@prisma/client";
 
 function sha256(data: Buffer): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
 function deriveEventKey(event: SupportedWebhookEvent, rawBody: Buffer): string {
+  const topLevelEventId = (event as Record<string, unknown>).id;
+  if (topLevelEventId && typeof topLevelEventId === "string" && topLevelEventId.startsWith("evt_")) {
+    return `razorpay:event:${topLevelEventId}`;
+  }
+
   const providerEventId = (event.payload.payment as Record<string, unknown>)?.id
     ?? (event.payload.payment_link as Record<string, unknown>)?.id;
-
-  if (providerEventId && typeof providerEventId === "string" && providerEventId.startsWith("evt_")) {
-    return `razorpay:event:${providerEventId}`;
-  }
 
   const eventType = event.event;
   const paymentOrLinkId = providerEventId ?? "unknown";
@@ -33,13 +32,29 @@ function deriveEventKey(event: SupportedWebhookEvent, rawBody: Buffer): string {
   return `razorpay:${eventType}:${paymentOrLinkId}:${createdAt}:${payloadHash}`;
 }
 
-async function insertWebhookReceipt(
+async function handleWithIdempotency(
   eventKey: string,
   providerEvent: string,
   payloadHash: string,
-  outcome: string
+  handler: () => Promise<{ outcome: string; caseId?: string; isDuplicate: boolean }>
 ) {
-  return createWebhookReceipt(eventKey, providerEvent, payloadHash, outcome);
+  try {
+    return await handler();
+  } catch (error) {
+    const prismaError = error as Prisma.PrismaClientKnownRequestError;
+    const meta = prismaError.meta as { target?: string[] } | undefined;
+    if (prismaError.code === "P2002" && meta?.target?.includes("event_key")) {
+      const existingReceipt = await findWebhookReceiptByEventKey(eventKey);
+      if (existingReceipt) {
+        return {
+          outcome: existingReceipt.outcome,
+          caseId: undefined,
+          isDuplicate: true,
+        };
+      }
+    }
+    throw error;
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -110,85 +125,65 @@ export async function POST(request: NextRequest) {
   const providerEvent = parsedEvent.event;
   const payloadHash = sha256(rawBody);
 
-  let receipt;
-  try {
-    receipt = await insertWebhookReceipt(eventKey, providerEvent, payloadHash, "processing");
-  } catch (error: unknown) {
-    const prismaError = error as { code?: string };
-    if (prismaError.code === "P2002") {
-      const existingReceipt = await findWebhookReceiptByEventKey(eventKey);
-      if (existingReceipt) {
-        return NextResponse.json(
-          { status: existingReceipt.outcome, duplicate: true },
-          { status: 200 }
-        );
-      }
-    }
+  const existingReceipt = await findWebhookReceiptByEventKey(eventKey);
+  if (existingReceipt) {
     return NextResponse.json(
-      { status: "error", message: "Failed to record webhook receipt" },
-      { status: 500 }
+      { status: existingReceipt.outcome, duplicate: true },
+      { status: 200 }
     );
   }
 
-  let outcome: string;
-  let caseId: string | undefined;
-  let isDuplicateCase = false;
+  let result: { outcome: string; caseId?: string; isDuplicate: boolean };
 
   try {
     switch (parsedEvent.event) {
       case "payment.failed": {
-        const result = await handlePaymentFailed(
-          { payment: parsedEvent.payload.payment as Record<string, unknown> },
-          rawBody,
-          eventKey
+        result = await handleWithIdempotency(eventKey, providerEvent, payloadHash, () =>
+          handlePaymentFailedInTransaction(
+            { payment: parsedEvent.payload.payment as Record<string, unknown> },
+            rawBody,
+            eventKey,
+            providerEvent,
+            payloadHash
+          )
         );
-        outcome = result.isDuplicate ? "duplicate" : "created";
-        caseId = result.recoveryCase.id;
-        isDuplicateCase = result.isDuplicate;
         break;
       }
       case "payment.captured": {
-        const result = await handlePaymentCaptured(
-          { payment: parsedEvent.payload.payment as Record<string, unknown> },
-          eventKey
+        result = await handleWithIdempotency(eventKey, providerEvent, payloadHash, () =>
+          handlePaymentCapturedInTransaction(
+            { payment: parsedEvent.payload.payment as Record<string, unknown> },
+            eventKey,
+            providerEvent,
+            payloadHash
+          )
         );
-        outcome = result.wasAlreadyClosed ? "duplicate" : (result.recoveryCase ? "closed" : "ignored_no_case");
-        caseId = result.recoveryCase?.id;
-        isDuplicateCase = result.wasAlreadyClosed;
         break;
       }
       case "payment_link.paid": {
-        const result = await handlePaymentLinkPaid(
-          { payment_link: parsedEvent.payload.payment_link as Record<string, unknown> },
-          eventKey
+        result = await handleWithIdempotency(eventKey, providerEvent, payloadHash, () =>
+          handlePaymentLinkPaidInTransaction(
+            { payment_link: parsedEvent.payload.payment_link as Record<string, unknown> },
+            eventKey,
+            providerEvent,
+            payloadHash
+          )
         );
-        if (!result.recoveryCase) {
-          outcome = "ignored_unknown_payment_link";
-        } else {
-          outcome = result.isDuplicate ? "duplicate" : "recovered";
-          caseId = result.recoveryCase.id;
-          isDuplicateCase = result.isDuplicate;
-        }
         break;
       }
       default:
-        outcome = "ignored_unsupported_event";
+        result = { outcome: "ignored_unsupported_event", caseId: undefined, isDuplicate: false };
     }
-  } catch (error) {
-    console.error("Webhook handling error:", error);
-    outcome = "error";
-  }
-
-  try {
-    await updateWebhookReceiptOutcome(receipt.id, outcome);
   } catch {
-    // If we can't update the receipt, the outcome is still recorded as "processing"
-    // This is acceptable for idempotency since the receipt exists
+    console.error("Webhook processing failed");
+    return NextResponse.json(
+      { status: "error", message: "Internal processing failure" },
+      { status: 500 }
+    );
   }
 
-  const isDuplicate = receipt.outcome !== "processing" && receipt.outcome !== outcome;
   return NextResponse.json(
-    { status: outcome, duplicate: isDuplicateCase, caseId },
+    { status: result.outcome, duplicate: result.isDuplicate, caseId: result.caseId },
     { status: 200 }
   );
 }

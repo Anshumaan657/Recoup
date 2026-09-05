@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+const strictBoolean = z
+  .union([z.boolean(), z.literal("true"), z.literal("false")])
+  .transform((val) => {
+    if (typeof val === "boolean") return val;
+    return val === "true";
+  });
+
 const serverEnvSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   RAZORPAY_KEY_ID: z.string().optional(),
@@ -10,8 +17,8 @@ const serverEnvSchema = z.object({
   AI_MODEL: z.string().optional(),
   RECOVERY_GRACE_SECONDS: z.coerce.number().int().positive().default(90),
   MAX_RECOVERY_ATTEMPTS: z.coerce.number().int().positive().default(1),
-  ENABLE_RAZORPAY_LINKS: z.coerce.boolean().default(false),
-  DEMO_MODE: z.coerce.boolean().default(true),
+  ENABLE_RAZORPAY_LINKS: strictBoolean.default(false),
+  DEMO_MODE: strictBoolean.default(true),
 });
 
 const clientEnvSchema = z.object({
@@ -35,6 +42,10 @@ export function getServerEnv(): z.infer<typeof serverEnvSchema> {
 
   serverEnv = parsed.data;
   return serverEnv;
+}
+
+export function resetServerEnvCache(): void {
+  serverEnv = null;
 }
 
 export function getClientEnv(): z.infer<typeof clientEnvSchema> {

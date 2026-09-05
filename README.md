@@ -121,10 +121,16 @@ Key invariants:
 ## Razorpay Test Mode Webhook Setup
 
 1. Create a test-mode webhook in Razorpay Dashboard → Webhooks
-2. URL: `https://your-domain/api/webhooks/razorpay`
+2. URL: `https://your-domain/webhooks/razorpay`
 3. Events: `payment.failed`, `payment.captured`, `payment_link.paid`
 4. Copy signing secret to `RAZORPAY_WEBHOOK_SECRET`
 5. For local dev, use ngrok: `ngrok http 3000`
+
+## Webhook Signature Verification
+
+- Invalid or missing `X-Razorpay-Signature` header returns HTTP 401
+- Signature verified using HMAC-SHA256 with `RAZORPAY_WEBHOOK_SECRET`
+- Verification uses constant-time comparison to prevent timing attacks
 
 ## Supported Events
 
@@ -138,7 +144,7 @@ Key invariants:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/webhooks/razorpay` | Ingest Razorpay webhooks |
+| `POST` | `/webhooks/razorpay` | Ingest Razorpay webhooks |
 | `GET` | `/api/recoveries` | List recovery cases |
 | `GET` | `/api/recoveries/:id` | Case detail with audit timeline |
 | `GET` | `/api/metrics` | Revenue metrics |

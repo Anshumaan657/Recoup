@@ -31,6 +31,7 @@ const paymentLinkEntity = baseRazorpayEntity.extend({
 }).passthrough();
 
 const webhookEnvelope = z.object({
+  id: z.string().optional(),
   event: z.string().min(1),
   account_id: z.string().optional(),
   created_at: z.number().int().positive(),

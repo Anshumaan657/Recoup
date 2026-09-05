@@ -15,8 +15,14 @@ import {
   resetDemoData,
 } from "@/lib/recovery/service";
 import { RecoveryStatus, RecoveryAction, AuditEventType } from "@/types/domain";
+import {
+  assertSafeTestDatabaseUrl,
+  TEST_DATABASE_URL,
+} from "../test-database";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasources: { db: { url: TEST_DATABASE_URL } },
+});
 
 beforeAll(async () => {
   await prisma.$connect();
@@ -27,6 +33,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  assertSafeTestDatabaseUrl();
   await prisma.auditEvent.deleteMany();
   await prisma.notificationOutbox.deleteMany();
   await prisma.webhookReceipt.deleteMany();

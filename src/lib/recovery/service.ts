@@ -290,217 +290,411 @@ export async function markNotificationSent(
   });
 }
 
-export async function handlePaymentFailed(
-  payload: { payment: Record<string, unknown> },
-  rawBody: Buffer,
-  eventKey: string
-): Promise<{ recoveryCase: RecoveryCase; isDuplicate: boolean }> {
-  const payment = payload.payment as Record<string, unknown>;
-  const originalPaymentId = String(payment.id);
-  const orderId = String(payment.order_id);
-  const amount = Number(payment.amount);
-  const currency = String(payment.currency);
-  const customerName = payment.email ? String(payment.email) : null;
-  const customerEmail = payment.email ? String(payment.email) : null;
-  const customerContact = payment.contact ? String(payment.contact) : null;
-  const paymentMethod = payment.method ? String(payment.method) : null;
-  const failureCode = payment.error_code ? String(payment.error_code) : null;
-  const failureReason = payment.error_description ? String(payment.error_description) : null;
-  const failureSource = payment.error_source ? String(payment.error_source) : null;
-  const failureStep = payment.error_step ? String(payment.error_step) : null;
-
-  const env = getServerEnv();
-  const graceExpiresAt = new Date(Date.now() + env.RECOVERY_GRACE_SECONDS * 1000);
-
-  const existingCase = await getRecoveryCaseByOriginalPaymentId(originalPaymentId);
-  if (existingCase) {
-    return { recoveryCase: existingCase, isDuplicate: true };
-  }
-
-  const recoveryCase = await createRecoveryCaseWithAudit(
-    {
-      originalPaymentId,
-      orderId,
-      amount,
-      currency,
-      customerName,
-      customerEmail,
-      customerContact,
-      paymentMethod,
-      failureCode,
-      failureReason,
-      failureSource,
-      failureStep,
-      attemptCount: 0,
-      status: RecoveryStatus.waiting,
-      selectedAction: null,
-      decisionReason: null,
-      confidence: null,
-      requiresApproval: false,
-      graceExpiresAt,
-      paymentLinkId: null,
-      paymentLinkUrl: null,
-      paymentLinkExpiry: null,
-      recoveredAmount: null,
-      recoveredAt: null,
-      stoppedReason: null,
-    },
-    [
-      {
-        eventType: AuditEventType.payment_failed_received,
-        message: `Payment failed: ${failureReason ?? "Unknown reason"}`,
-        metadata: {
-          failureCode,
-          failureSource,
-          failureStep,
-          eventKey,
-          rawBodyHash: sha256(rawBody),
-        },
-      },
-      {
-        eventType: AuditEventType.grace_started,
-        message: `Grace period started, expires at ${graceExpiresAt.toISOString()}`,
-        metadata: { graceSeconds: env.RECOVERY_GRACE_SECONDS },
-      },
-    ]
-  );
-
-  return { recoveryCase, isDuplicate: false };
-}
-
-export async function handlePaymentCaptured(
-  payload: { payment: Record<string, unknown> },
-  eventKey: string
-): Promise<{ recoveryCase: RecoveryCase | null; isDuplicate: boolean; wasAlreadyClosed: boolean }> {
-  const payment = payload.payment as Record<string, unknown>;
-  const originalPaymentId = String(payment.id);
-  const orderId = String(payment.order_id);
-  const amount = Number(payment.amount);
-  const currency = String(payment.currency);
-
-  const existingCase = await getRecoveryCaseByOriginalPaymentId(originalPaymentId);
-  if (!existingCase) {
-    const closedCase = await createRecoveryCaseWithAudit(
-      {
-        originalPaymentId,
-        orderId,
-        amount,
-        currency,
-        customerName: null,
-        customerEmail: null,
-        customerContact: null,
-        paymentMethod: null,
-        failureCode: null,
-        failureReason: null,
-        failureSource: null,
-        failureStep: null,
-        attemptCount: 0,
-        status: RecoveryStatus.closed,
-        selectedAction: null,
-        decisionReason: null,
-        confidence: null,
-        requiresApproval: false,
-        graceExpiresAt: null,
-        paymentLinkId: null,
-        paymentLinkUrl: null,
-        paymentLinkExpiry: null,
-        recoveredAmount: null,
-        recoveredAt: null,
-        stoppedReason: "late_capture",
-      },
-      [
-        {
-          eventType: AuditEventType.late_capture_received,
-          message: "Late capture received before failure event, case closed",
-          metadata: { eventKey, capturedAt: new Date().toISOString() },
-        },
-        {
-          eventType: AuditEventType.recovery_stopped,
-          message: "Recovery stopped due to late capture",
-          metadata: { stoppedReason: "late_capture", eventKey },
-        },
-      ]
-    );
-    return { recoveryCase: closedCase, isDuplicate: false, wasAlreadyClosed: false };
-  }
-
-  if (isTerminal(existingCase.status)) {
-    return { recoveryCase: existingCase, isDuplicate: true, wasAlreadyClosed: true };
-  }
-
-  const lateCaptureStatus = applyLateCapture(existingCase.status);
-  if (!lateCaptureStatus) {
-    return { recoveryCase: existingCase, isDuplicate: false, wasAlreadyClosed: false };
-  }
-
-  const updatedCase = await updateRecoveryCaseStatus(
-    existingCase.id,
-    lateCaptureStatus,
-    undefined,
-    { stoppedReason: "late_capture" }
-  );
-
-  await appendAuditEvent(updatedCase.id, {
-    eventType: AuditEventType.late_capture_received,
-    message: "Late capture received, stopping recovery",
-    metadata: { eventKey, capturedAt: new Date().toISOString() },
-  });
-
-  await appendAuditEvent(updatedCase.id, {
-    eventType: AuditEventType.recovery_stopped,
-    message: "Recovery stopped due to late capture",
-    metadata: { stoppedReason: "late_capture", eventKey },
-  });
-
-  return { recoveryCase: updatedCase, isDuplicate: false, wasAlreadyClosed: false };
-}
-
-export async function handlePaymentLinkPaid(
-  payload: { payment_link: Record<string, unknown> },
-  eventKey: string
-): Promise<{ recoveryCase: RecoveryCase | null; isDuplicate: boolean }> {
-  const paymentLink = payload.payment_link as Record<string, unknown>;
-  const paymentLinkId = String(paymentLink.id);
-  const notes = (paymentLink.notes as Record<string, string>) ?? {};
-  const recoveryCaseId = notes.recovery_case_id;
-
-  if (!recoveryCaseId) {
-    return { recoveryCase: null, isDuplicate: false };
-  }
-
-  const existingCase = await prisma.recoveryCase.findUnique({ where: { id: recoveryCaseId } });
-  if (!existingCase) {
-    return { recoveryCase: null, isDuplicate: false };
-  }
-
-  if (existingCase.status === RecoveryStatus.recovered) {
-    return { recoveryCase: mapRecoveryCase(existingCase), isDuplicate: true };
-  }
-
-  const amount = Number(paymentLink.amount ?? existingCase.amount);
-
-  const updatedCase = await updateRecoveryCaseStatus(
-    existingCase.id,
-    RecoveryStatus.recovered,
-    undefined,
-    {
-      recoveredAmount: amount,
-      recoveredAt: new Date(),
-      paymentLinkId,
-    }
-  );
-
-  await appendAuditEvent(updatedCase.id, {
-    eventType: AuditEventType.recovery_succeeded,
-    message: "Recovery succeeded via payment link",
-    metadata: { paymentLinkId, amount, eventKey },
-  });
-
-  return { recoveryCase: updatedCase, isDuplicate: false };
-}
-
 function sha256(data: Buffer): string {
   return createHash("sha256").update(data).digest("hex");
+}
+
+export async function handlePaymentFailedInTransaction(
+  payload: { payment: Record<string, unknown> },
+  rawBody: Buffer,
+  eventKey: string,
+  providerEvent: string,
+  payloadHash: string
+): Promise<{ outcome: string; caseId?: string; isDuplicate: boolean }> {
+  return prisma.$transaction(async (tx) => {
+    const receipt = await tx.webhookReceipt.create({
+      data: { eventKey, providerEvent, payloadHash, outcome: "processing" },
+    });
+
+    try {
+      const payment = payload.payment as Record<string, unknown>;
+      const originalPaymentId = String(payment.id);
+      const orderId = String(payment.order_id);
+      const amount = Number(payment.amount);
+      const currency = String(payment.currency);
+      const customerName = null;
+      const customerEmail = payment.email ? String(payment.email) : null;
+      const customerContact = payment.contact ? String(payment.contact) : null;
+      const paymentMethod = payment.method ? String(payment.method) : null;
+      const failureCode = payment.error_code ? String(payment.error_code) : null;
+      const errorDescription = payment.error_description
+        ? String(payment.error_description)
+        : null;
+      const failureReason = payment.error_reason ? String(payment.error_reason)
+        : errorDescription;
+      const failureSource = payment.error_source ? String(payment.error_source) : null;
+      const failureStep = payment.error_step ? String(payment.error_step) : null;
+
+      const env = getServerEnv();
+      const graceExpiresAt = new Date(Date.now() + env.RECOVERY_GRACE_SECONDS * 1000);
+
+      const existingCase = await tx.recoveryCase.findUnique({ where: { originalPaymentId } });
+      if (existingCase) {
+        await tx.webhookReceipt.update({
+          where: { id: receipt.id },
+          data: { outcome: "duplicate" },
+        });
+        return { outcome: "duplicate", caseId: existingCase.id, isDuplicate: true };
+      }
+
+      const recoveryCase = await tx.recoveryCase.create({
+        data: {
+          originalPaymentId,
+          orderId,
+          amount,
+          currency,
+          customerName,
+          customerEmail,
+          customerContact,
+          paymentMethod,
+          failureCode,
+          failureReason,
+          failureSource,
+          failureStep,
+          attemptCount: 0,
+          status: RecoveryStatus.waiting,
+          selectedAction: null,
+          decisionReason: null,
+          confidence: null,
+          requiresApproval: false,
+          graceExpiresAt,
+          paymentLinkId: null,
+          paymentLinkUrl: null,
+          paymentLinkExpiry: null,
+          recoveredAmount: null,
+          recoveredAt: null,
+          stoppedReason: null,
+        },
+      });
+
+      await tx.auditEvent.createMany({
+        data: [
+          {
+            recoveryCaseId: recoveryCase.id,
+            eventType: AuditEventType.payment_failed_received,
+            message: `Payment failed: ${errorDescription ?? "Unknown reason"}`,
+            metadata: JSON.stringify({
+              failureCode,
+              errorDescription,
+              failureSource,
+              failureStep,
+              eventKey,
+              rawBodyHash: sha256(rawBody),
+            }),
+          },
+          {
+            recoveryCaseId: recoveryCase.id,
+            eventType: AuditEventType.grace_started,
+            message: `Grace period started, expires at ${graceExpiresAt.toISOString()}`,
+            metadata: JSON.stringify({ graceSeconds: env.RECOVERY_GRACE_SECONDS }),
+          },
+        ],
+      });
+
+      await tx.webhookReceipt.update({
+        where: { id: receipt.id },
+        data: { outcome: "created" },
+      });
+
+      return { outcome: "created", caseId: recoveryCase.id, isDuplicate: false };
+    } catch (error) {
+      await tx.webhookReceipt.update({
+        where: { id: receipt.id },
+        data: { outcome: "error" },
+      });
+      throw error;
+    }
+  });
+}
+
+export async function handlePaymentCapturedInTransaction(
+  payload: { payment: Record<string, unknown> },
+  eventKey: string,
+  providerEvent: string,
+  payloadHash: string
+): Promise<{ outcome: string; caseId?: string; isDuplicate: boolean }> {
+  return prisma.$transaction(async (tx) => {
+    const receipt = await tx.webhookReceipt.create({
+      data: { eventKey, providerEvent, payloadHash, outcome: "processing" },
+    });
+
+    try {
+      const payment = payload.payment as Record<string, unknown>;
+      const originalPaymentId = String(payment.id);
+      const orderId = String(payment.order_id);
+      const amount = Number(payment.amount);
+      const currency = String(payment.currency);
+
+      const existingCase = await tx.recoveryCase.findUnique({ where: { originalPaymentId } });
+      if (!existingCase) {
+        const closedCase = await tx.recoveryCase.create({
+          data: {
+            originalPaymentId,
+            orderId,
+            amount,
+            currency,
+            customerName: null,
+            customerEmail: null,
+            customerContact: null,
+            paymentMethod: null,
+            failureCode: null,
+            failureReason: null,
+            failureSource: null,
+            failureStep: null,
+            attemptCount: 0,
+            status: RecoveryStatus.closed,
+            selectedAction: null,
+            decisionReason: null,
+            confidence: null,
+            requiresApproval: false,
+            graceExpiresAt: null,
+            paymentLinkId: null,
+            paymentLinkUrl: null,
+            paymentLinkExpiry: null,
+            recoveredAmount: null,
+            recoveredAt: null,
+            stoppedReason: "late_capture",
+          },
+        });
+
+        await tx.auditEvent.createMany({
+          data: [
+            {
+              recoveryCaseId: closedCase.id,
+              eventType: AuditEventType.late_capture_received,
+              message: "Late capture received before failure event, case closed",
+              metadata: JSON.stringify({ eventKey, capturedAt: new Date().toISOString() }),
+            },
+            {
+              recoveryCaseId: closedCase.id,
+              eventType: AuditEventType.recovery_stopped,
+              message: "Recovery stopped due to late capture",
+              metadata: JSON.stringify({ stoppedReason: "late_capture", eventKey }),
+            },
+          ],
+        });
+
+        await tx.webhookReceipt.update({
+          where: { id: receipt.id },
+          data: { outcome: "closed" },
+        });
+
+        return { outcome: "closed", caseId: closedCase.id, isDuplicate: false };
+      }
+
+      if (isTerminal(toRecoveryStatus(existingCase.status))) {
+        await tx.webhookReceipt.update({
+          where: { id: receipt.id },
+          data: { outcome: "duplicate" },
+        });
+        return { outcome: "duplicate", caseId: existingCase.id, isDuplicate: true };
+      }
+
+      const lateCaptureStatus = applyLateCapture(toRecoveryStatus(existingCase.status));
+      if (!lateCaptureStatus) {
+        await tx.webhookReceipt.update({
+          where: { id: receipt.id },
+          data: { outcome: "ignored_no_case" },
+        });
+        return { outcome: "ignored_no_case", caseId: existingCase.id, isDuplicate: false };
+      }
+
+      const updatedCase = await tx.recoveryCase.update({
+        where: { id: existingCase.id },
+        data: {
+          status: lateCaptureStatus,
+          stoppedReason: "late_capture",
+        },
+      });
+
+      await tx.auditEvent.createMany({
+        data: [
+          {
+            recoveryCaseId: updatedCase.id,
+            eventType: AuditEventType.late_capture_received,
+            message: "Late capture received, stopping recovery",
+            metadata: JSON.stringify({ eventKey, capturedAt: new Date().toISOString() }),
+          },
+          {
+            recoveryCaseId: updatedCase.id,
+            eventType: AuditEventType.recovery_stopped,
+            message: "Recovery stopped due to late capture",
+            metadata: JSON.stringify({ stoppedReason: "late_capture", eventKey }),
+          },
+        ],
+      });
+
+      await tx.webhookReceipt.update({
+        where: { id: receipt.id },
+        data: { outcome: "closed" },
+      });
+
+      return { outcome: "closed", caseId: updatedCase.id, isDuplicate: false };
+    } catch (error) {
+      await tx.webhookReceipt.update({
+        where: { id: receipt.id },
+        data: { outcome: "error" },
+      });
+      throw error;
+    }
+  });
+}
+
+export async function handlePaymentLinkPaidInTransaction(
+  payload: { payment_link: Record<string, unknown> },
+  eventKey: string,
+  providerEvent: string,
+  payloadHash: string
+): Promise<{ outcome: string; caseId?: string; isDuplicate: boolean }> {
+  return prisma.$transaction(async (tx) => {
+    const receipt = await tx.webhookReceipt.create({
+      data: { eventKey, providerEvent, payloadHash, outcome: "processing" },
+    });
+
+    try {
+      const paymentLink = payload.payment_link as Record<string, unknown>;
+      const paymentLinkId = String(paymentLink.id);
+      const notes = (paymentLink.notes as Record<string, string>) ?? {};
+      const recoveryCaseId = notes.recovery_case_id;
+
+      if (!recoveryCaseId) {
+        await tx.webhookReceipt.update({
+          where: { id: receipt.id },
+          data: { outcome: "ignored_unknown_payment_link" },
+        });
+        return { outcome: "ignored_unknown_payment_link", caseId: undefined, isDuplicate: false };
+      }
+
+      const existingCase = await tx.recoveryCase.findUnique({ where: { id: recoveryCaseId } });
+      if (!existingCase) {
+        await tx.webhookReceipt.update({
+          where: { id: receipt.id },
+          data: { outcome: "ignored_unknown_payment_link" },
+        });
+        return { outcome: "ignored_unknown_payment_link", caseId: undefined, isDuplicate: false };
+      }
+
+      if (
+        existingCase.status === RecoveryStatus.recovered ||
+        existingCase.status === RecoveryStatus.closed
+      ) {
+        await tx.webhookReceipt.update({
+          where: { id: receipt.id },
+          data: { outcome: "duplicate" },
+        });
+        return { outcome: "duplicate", caseId: existingCase.id, isDuplicate: true };
+      }
+
+      const webhookAmount = paymentLink.amount ? Number(paymentLink.amount) : null;
+      const webhookCurrency = paymentLink.currency ? String(paymentLink.currency) : null;
+
+      if (webhookAmount === null || webhookAmount !== existingCase.amount) {
+        await tx.recoveryCase.update({
+          where: { id: existingCase.id },
+          data: {
+            status: RecoveryStatus.manual_review,
+            selectedAction: RecoveryAction.manual_review,
+            requiresApproval: true,
+            decisionReason: "Payment link amount mismatch",
+          },
+        });
+        await tx.webhookReceipt.update({
+          where: { id: receipt.id },
+          data: { outcome: "amount_mismatch" },
+        });
+        await tx.auditEvent.createMany({
+          data: [
+            {
+              recoveryCaseId: existingCase.id,
+              eventType: AuditEventType.provider_error,
+              message: "Payment link amount mismatch",
+              metadata: JSON.stringify({
+                expectedAmount: existingCase.amount,
+                receivedAmount: webhookAmount,
+                eventKey,
+              }),
+            },
+            {
+              recoveryCaseId: existingCase.id,
+              eventType: AuditEventType.manual_review_requested,
+              message: "Manual review required for payment link amount mismatch",
+              metadata: JSON.stringify({ reason: "amount_mismatch", eventKey }),
+            },
+          ],
+        });
+        return { outcome: "amount_mismatch", caseId: existingCase.id, isDuplicate: false };
+      }
+
+      if (webhookCurrency === null || webhookCurrency !== existingCase.currency) {
+        await tx.recoveryCase.update({
+          where: { id: existingCase.id },
+          data: {
+            status: RecoveryStatus.manual_review,
+            selectedAction: RecoveryAction.manual_review,
+            requiresApproval: true,
+            decisionReason: "Payment link currency mismatch",
+          },
+        });
+        await tx.webhookReceipt.update({
+          where: { id: receipt.id },
+          data: { outcome: "currency_mismatch" },
+        });
+        await tx.auditEvent.createMany({
+          data: [
+            {
+              recoveryCaseId: existingCase.id,
+              eventType: AuditEventType.provider_error,
+              message: "Payment link currency mismatch",
+              metadata: JSON.stringify({
+                expectedCurrency: existingCase.currency,
+                receivedCurrency: webhookCurrency,
+                eventKey,
+              }),
+            },
+            {
+              recoveryCaseId: existingCase.id,
+              eventType: AuditEventType.manual_review_requested,
+              message: "Manual review required for payment link currency mismatch",
+              metadata: JSON.stringify({ reason: "currency_mismatch", eventKey }),
+            },
+          ],
+        });
+        return { outcome: "currency_mismatch", caseId: existingCase.id, isDuplicate: false };
+      }
+
+      const updatedCase = await tx.recoveryCase.update({
+        where: { id: existingCase.id },
+        data: {
+          status: RecoveryStatus.recovered,
+          recoveredAmount: existingCase.amount,
+          recoveredAt: new Date(),
+          paymentLinkId,
+        },
+      });
+
+      await tx.auditEvent.create({
+        data: {
+          recoveryCaseId: updatedCase.id,
+          eventType: AuditEventType.recovery_succeeded,
+          message: "Recovery succeeded via payment link",
+          metadata: JSON.stringify({ paymentLinkId, amount: existingCase.amount, eventKey }),
+        },
+      });
+
+      await tx.webhookReceipt.update({
+        where: { id: receipt.id },
+        data: { outcome: "recovered" },
+      });
+
+      return { outcome: "recovered", caseId: updatedCase.id, isDuplicate: false };
+    } catch (error) {
+      await tx.webhookReceipt.update({
+        where: { id: receipt.id },
+        data: { outcome: "error" },
+      });
+      throw error;
+    }
+  });
 }
 
 export async function resetDemoData(): Promise<void> {

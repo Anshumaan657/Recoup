@@ -4,16 +4,14 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { generateRazorpaySignature } from "@/lib/razorpay/signatures";
 import {
-  handlePaymentFailed,
-  handlePaymentCaptured,
-  handlePaymentLinkPaid,
-  createWebhookReceipt,
   findWebhookReceiptByEventKey,
   getRecoveryCaseByOriginalPaymentId,
   getRecoveryCaseWithTimeline,
   resetDemoData,
 } from "@/lib/recovery/service";
 import { RecoveryStatus, AuditEventType } from "@/types/domain";
+import { POST } from "@/app/webhooks/razorpay/route";
+import { assertSafeTestDatabaseUrl } from "../test-database";
 
 const prisma = new PrismaClient();
 
@@ -21,7 +19,6 @@ const TEST_WEBHOOK_SECRET = "recoverai-test-only-webhook-secret";
 
 beforeAll(async () => {
   await prisma.$connect();
-  process.env.RAZORPAY_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
 });
 
 afterAll(async () => {
@@ -29,6 +26,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  assertSafeTestDatabaseUrl();
   await resetDemoData();
 });
 
@@ -43,9 +41,8 @@ function signPayload(payload: Buffer, secret: string): string {
 
 async function postWebhook(payload: Buffer, secret: string) {
   const signature = signPayload(payload, secret);
-  const { POST } = await import("@/app/webhooks/razorpay/route");
 
-  const request = new Request("http://localhost:3000/api/webhooks/razorpay", {
+  const request = new Request("http://localhost:3000/webhooks/razorpay", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -245,7 +242,7 @@ describe("Webhook Integration Tests", () => {
       expect(caseData!.amount).toBe(50000);
       expect(caseData!.currency).toBe("INR");
       expect(caseData!.failureCode).toBe("INSUFFICIENT_FUNDS");
-      expect(caseData!.failureReason).toBe("Insufficient balance in account");
+      expect(caseData!.failureReason).toBe("insufficient_funds");
       expect(caseData!.failureSource).toBe("bank");
       expect(caseData!.failureStep).toBe("payment_processing");
       expect(caseData!.status).toBe(RecoveryStatus.waiting);
