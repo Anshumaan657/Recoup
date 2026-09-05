@@ -120,6 +120,12 @@ async function stopIneligibleCase(
           : {}),
       },
     });
+    if (reason === "customer_opt_out" || reason === "link_expired") {
+      await tx.notificationOutbox.updateMany({
+        where: { recoveryCaseId: caseId, status: "pending" },
+        data: { status: "cancelled" },
+      });
+    }
     await tx.auditEvent.create({
       data: auditData(
         caseId,

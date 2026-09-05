@@ -42,7 +42,9 @@ function validateRequest(params: PaymentLinkRequest): void {
   }
 }
 
-function simulatedLink(params: PaymentLinkRequest): PaymentLinkResponse {
+export function createSimulatedPaymentLink(
+  params: PaymentLinkRequest
+): PaymentLinkResponse {
   const digest = createHash("sha256")
     .update(params.reference_id)
     .digest("hex")
@@ -110,7 +112,7 @@ export async function createPaymentLink(
   );
 
   if (!env.ENABLE_RAZORPAY_LINKS || !hasCredentials) {
-    if (env.DEMO_MODE) return simulatedLink(params);
+    if (env.DEMO_MODE) return createSimulatedPaymentLink(params);
     throw new RazorpayProviderError(
       "configuration",
       500,

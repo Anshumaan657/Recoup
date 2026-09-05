@@ -34,17 +34,41 @@ model RecoveryCase {
   recoveredAmount   Int?     @map("recovered_amount")
   recoveredAt       DateTime? @map("recovered_at")
   stoppedReason     String?  @map("stopped_reason")
+  demoRunId         String?  @map("demo_run_id")
+  isSynthetic       Boolean  @default(false) @map("is_synthetic")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
   auditEvents       AuditEvent[]
   notifications     NotificationOutbox[]
+  demoRun           DemoRun? @relation(fields: [demoRunId], references: [id], onDelete: Cascade)
 
   @@index([status])
   @@index([createdAt])
   @@index([originalPaymentId])
   @@index([orderId])
+  @@index([demoRunId])
   @@map("recovery_cases")
+}
+
+model DemoRun {
+  id              String    @id
+  datasetVersion  String    @map("dataset_version")
+  seed            Int
+  status          String    @default("running")
+  synthetic       Boolean   @default(true)
+  expectedMetrics String?   @map("expected_metrics")
+  resultMetrics   String?   @map("result_metrics")
+  startedAt       DateTime  @default(now()) @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+
+  recoveryCases   RecoveryCase[]
+  webhookReceipts WebhookReceipt[]
+
+  @@unique([datasetVersion, seed])
+  @@index([status])
+  @@index([startedAt])
+  @@map("demo_runs")
 }
 
 model AuditEvent {
@@ -70,10 +94,14 @@ model WebhookReceipt {
   payloadHash   String   @map("payload_hash")
   processedAt   DateTime @default(now()) @map("processed_at")
   outcome       String
+  demoRunId     String?  @map("demo_run_id")
+
+  demoRun       DemoRun? @relation(fields: [demoRunId], references: [id], onDelete: Cascade)
 
   @@index([eventKey])
   @@index([providerEvent])
   @@index([processedAt])
+  @@index([demoRunId])
   @@map("webhook_receipts")
 }
 

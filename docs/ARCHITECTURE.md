@@ -165,6 +165,20 @@ The Policy Engine is the **sole authority** for authorization:
 | Concurrent execution attempt | Reservation pattern, second returns conflict |
 | Database unavailable | 500, no partial state changes (transactions) |
 
+## Synthetic Evaluation Boundaries
+
+The 60-case Phase 6 dataset is a deterministic demonstration benchmark, not a
+claim about production conversion. Identities use reserved example data,
+outcomes are predetermined outside agent-visible inputs, and every metric is
+labeled synthetic. Replay sends signed fixtures through production webhook
+ingestion, evaluates visible context with the deterministic fallback policy,
+and exercises guarded execution. A separate event plan supplies external
+outcomes such as capture, expiry, and Payment Link payment. The result
+demonstrates safety and repeatability, not an expected real-world recovery rate.
+
+Synthetic cases and webhook receipts belong to a `DemoRun`; deleting a demo run
+cascades only through demo-owned data and preserves merchant-owned rows.
+
 ## Production Readiness Gaps
 
 - [ ] PostgreSQL instead of SQLite (concurrency, replication)

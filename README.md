@@ -166,12 +166,35 @@ Late capture closes the case and cancels pending notification delivery.
 | `attempted` | Cases where recovery action was taken |
 | `contacted` | Cases where customer was notified |
 | `recovered` | Cases with verified payment link payment |
-| `stopped` | Cases closed by late capture |
+| `stopped` | Late-capture or unrecoverable cases stopped before recovery; expired attempted links remain attempted-but-not-recovered |
 | `manualReview` | Cases escalated for human review |
 | `duplicatesPrevented` | Late captures that stopped duplicate charges |
 | `totalAtRiskPaise` | Sum of original failed payment amounts |
 | `recoveredPaise` | Sum of verified recovered amounts |
 | `recoveryRate` | `recoveredPaise / totalAtRiskPaise` |
+
+## Deterministic Demo Evaluation
+
+The Phase 6 benchmark contains exactly 60 versioned synthetic cases. It never
+uses real customer data, sends external notifications, or creates a live payment
+action. Apply migrations and replay the fixed dataset with one command:
+
+```bash
+npx prisma migrate deploy
+npm run demo:replay
+```
+
+The default seed always produces ₹1,24,840 at risk, ₹38,280 recovered, 20
+recovered cases, 8 duplicate collections prevented by late capture, and a
+30.6632% rupee recovery rate. Results are labeled `synthetic`, and
+`npm run demo:reset` deletes only rows owned by synthetic demo runs.
+
+Demo APIs:
+
+- `POST /api/demo/replay` accepts only optional `{ "seed": 20260905, "reset": true }`.
+- `GET /api/metrics` returns the latest completed synthetic run.
+- `GET /api/recoveries?synthetic=true` returns masked recovery summaries.
+- `GET /api/recoveries/:id` returns one masked case and its audit timeline.
 
 ## Test Commands
 

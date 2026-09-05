@@ -71,7 +71,17 @@ export async function buildDecisionContext(case_: RecoveryCase): Promise<Decisio
   };
 }
 
-export async function evaluatePolicy(case_: RecoveryCase): Promise<PolicyResult> {
+export interface PolicyEvaluationOptions {
+  decisionProvider?: (
+    caseId: string,
+    context: DecisionContext
+  ) => Promise<RecoveryDecision>;
+}
+
+export async function evaluatePolicy(
+  case_: RecoveryCase,
+  options: PolicyEvaluationOptions = {}
+): Promise<PolicyResult> {
   if (!isEligibleForRecovery(case_.status, case_.graceExpiresAt ? new Date() > case_.graceExpiresAt : false)) {
     return {
       proposedDecision: null as any,
@@ -92,7 +102,9 @@ export async function evaluatePolicy(case_: RecoveryCase): Promise<PolicyResult>
     };
   }
 
-  const proposedDecision = await evaluateCaseWithAgent(case_.id, ctx);
+  const proposedDecision = await (
+    options.decisionProvider ?? evaluateCaseWithAgent
+  )(case_.id, ctx);
 
   const decisionGuardrailCheck = validateDecisionAgainstGuardrails(proposedDecision, ctx);
   if (!decisionGuardrailCheck.allowed) {
