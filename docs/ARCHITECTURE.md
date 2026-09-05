@@ -1,191 +1,88 @@
-# RecoverAI Architecture
+# RecoverAI architecture
 
-## System Context
+## Authority model
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│  Razorpay   │────▶│  Webhook     │────▶│  Recovery Case  │
-│  Webhooks   │     │  Ingestion   │     │  State Machine  │
-└─────────────┘     └──────────────┘     └────────┬────────┘
-                                                   │
-                    ┌──────────────┐     ┌────────▼────────┐
-                    │  Merchant    │◀────│  Recovery Agent │
-                    │  Dashboard   │     │  + Policy       │
-                    └──────────────┘     └────────┬────────┘
-                                                   │
-                    ┌──────────────┐     ┌────────▼────────┐
-                    │  Audit Trail │◀────│  Execution      │
-                    │  & Metrics   │     │  (Payment Link) │
-                    └──────────────┘     └─────────────────┘
-```
+The AI is advisory. It receives minimal non-PII context and returns a bounded `RecoveryDecision`. Zod validates the shape; policy checks grace expiry, terminal states, currency, amount, contact availability, approval threshold, attempt limit, link enablement, and prohibited credential language. Only the executor can create a Payment Link or enqueue a notification.
 
-## Core Components
-
-### 1. Webhook Ingestion (`src/app/webhooks/razorpay/route.ts`)
-- Verifies HMAC-SHA256 signatures using `RAZORPAY_WEBHOOK_SECRET` (HTTP 401 for invalid/missing)
-- Validates payload with Zod schemas
-- Idempotent via `WebhookReceipt` table (eventKey = provider event.id or computed hash)
-- Atomic transactions for all supported events
-- Creates `RecoveryCase` on `payment.failed`, handles `payment.captured` (late capture), `payment_link.paid`
-
-### 2. Recovery Domain (`src/types/domain.ts`, `prisma/schema.prisma`)
-- **RecoveryCase**: Core entity tracking failed payment recovery lifecycle
-- **AuditEvent**: Append-only log of all state changes and decisions
-- **WebhookReceipt**: Idempotency guard for webhook deliveries
-- **NotificationOutbox**: Outbox pattern for customer notifications
-
-### 3. State Machine (`src/lib/recovery/state-machine.ts`)
-Single authority for valid status transitions. Terminal states: `recovered`, `closed`.
-
-### 4. Recovery Agent + Policy (`src/lib/agent/`, `src/lib/policy/`)
-- Agent proposes `RecoveryDecision` via LLM (advisory only)
-- Policy engine validates against deterministic guardrails
-- Guardrails enforce: grace period, max attempts, opt-out, contact availability, currency, amount limits, approval thresholds
-
-#### LLM Advisory Role
-The LLM (Recovery Agent) is **strictly advisory**:
-- **Proposes only**: The agent outputs a `RecoveryDecision` JSON based on case context
-- **No execution authority**: The agent cannot create payment links, send notifications, or modify state
-- **Redacted context**: Only minimum necessary, non-PII data is sent to the LLM (amount, failure codes, method, attempt count)
-- **Structured output**: Strict JSON schema validated by Zod; invalid output triggers deterministic fallback
-- **Timeout & failure handling**: 10s timeout; network errors, invalid JSON, schema violations, or safety violations all trigger fallback
-
-#### Policy Engine Authority
-The Policy Engine is the **sole authority** for authorization:
-- **Guardrail evaluation**: Runs deterministic checks (grace period, max attempts, currency, contact channels, amount limits, approval thresholds)
-- **Decision validation**: Validates proposed action against guardrails (e.g., payment links require email + ENABLE_RAZORPAY_LINKS)
-- **Final authorization**: Only approved decisions transition the case; rejected decisions are audited with reasons
-- **Fallback integration**: When LLM fails, deterministic fallback rules apply and are audited with `fallbackUsed=true`
-- **Audit trail**: Every decision (proposed, approved, rejected) creates `decision_created`, `decision_rejected`, or `manual_review_requested` audit events with full reasoning
-
-### 5. Execution (`src/lib/razorpay/`, `src/lib/recovery/service.ts`)
-- Creates Razorpay Payment Links (test mode) or simulates in DEMO_MODE
-- Transactional reservation pattern prevents duplicate actions
-- Reconciles provider "already exists" responses
-
-### 6. Demo Simulator (`scripts/replay-demo.ts`, `src/app/api/demo/replay/route.ts`)
-- 60 synthetic cases with predetermined outcomes
-- Deterministic replay via injected clock
-- Metrics: attempted, contacted, recovered, stopped, manualReview, duplicatesPrevented, recoveryRate
-
-## State Transition Table
-
-| From \ To | waiting | eligible | contacted | recovered | closed | manual_review |
-|-----------|---------|----------|-----------|-----------|--------|---------------|
-| waiting   | ✓       | ✓        | ✗         | ✗         | ✓*     | ✓             |
-| eligible  | ✗       | ✓        | ✓         | ✗         | ✓*     | ✓             |
-| contacted | ✗       | ✗        | ✓         | ✓         | ✓*     | ✓             |
-| manual_review | ✗    | ✗        | ✓         | ✓         | ✓      | ✓             |
-| recovered | ✗       | ✗        | ✗         | ✓         | ✗      | ✗             |
-| closed    | ✗       | ✗        | ✗         | ✗         | ✓      | ✗             |
-
-* Late capture (`payment.captured` for original payment) forces transition to `closed` from `waiting`, `eligible`, or `contacted`.
-
-### Valid Action → Status Mappings
-| Action | From Status | To Status |
-|--------|-------------|-----------|
-| `retry_later` | waiting | eligible |
-| `create_payment_link` | eligible | contacted |
-| `suggest_alternate_method` | eligible | contacted |
-| `manual_review` | any non-terminal | manual_review |
-| `no_action` | any non-terminal | closed |
-
-## Invariants
-
-1. **Signature Verification**: Every webhook must pass HMAC-SHA256 verification before processing
-2. **Idempotency**: `WebhookReceipt.eventKey` unique constraint prevents duplicate processing
-3. **Grace Period**: No recovery action before `graceExpiresAt` (default 90s after failure)
-4. **LLM Advisory Only**: Model proposes; policy engine authorizes; code executes
-5. **Single Notification**: At most one customer notification per case (MVP)
-6. **Late Capture Stops Recovery**: Original payment capture closes case, cancels pending links
-7. **Verified Revenue Only**: Revenue recorded only on `payment_link.paid` or late capture
-8. **Integer Paise**: All amounts stored as integer paise (no floating point)
-9. **Terminal State Protection**: `recovered` and `closed` are absorbing states
-10. **Demo Labeling**: All demo metrics explicitly labeled "synthetic"
-
-## Trust Boundaries
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Server (Trusted)                      │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
-│  │ Webhook     │  │ State       │  │ Policy Engine   │  │
-│  │ Verification│  │ Machine     │  │ (Authoritative) │  │
-│  └─────────────┘  └─────────────┘  └────────┬────────┘  │
-│         │                │                   │           │
-│         ▼                ▼                   ▼           │
-│  ┌─────────────────────────────────────────────────┐    │
-│  │           Prisma / SQLite (Source of Truth)      │    │
-│  └─────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Client (Untrusted)                    │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
-│  │ Dashboard   │  │ API Calls   │  │ User Input      │  │
-│  │ (Read-only) │  │ (Validated) │  │ (Sanitized)     │  │
-│  └─────────────┘  └─────────────┘  └─────────────────┘  │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│                 External Providers                       │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
-│  │ Razorpay    │  │ LLM API     │  │ Notification    │  │
-│  │ (Test Mode) │  │ (Advisory)  │  │ (Outbox)        │  │
-│  └─────────────┘  └─────────────┘  └─────────────────┘  │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+  W[Signed Razorpay event] --> I[Idempotent webhook transaction]
+  I --> C[RecoveryCase + AuditEvent]
+  C --> Q{Grace expired?}
+  Q -->|no| WAI[waiting]
+  Q -->|yes| AG[AI proposal or fallback]
+  AG --> PO{Policy authorization}
+  PO -->|approved| EX[Reserved execution]
+  PO -->|uncertain/high risk| MR[manual_review]
+  PO -->|not recoverable| CL[closed]
+  EX --> CT[contacted]
+  CT -->|verified link paid| RE[recovered]
+  WAI -->|original captured| CL
+  EX -->|original captured| CL
+  CT -->|original captured| CL
 ```
 
-- **Server** owns: secrets, state transitions, policy decisions, payment link creation
-- **Client** receives: read-only data, masked PII, no secrets
-- **LLM** receives: redacted context (no PII, no secrets), returns structured JSON only
-- **Razorpay** receives: test-mode API calls only, idempotent reference IDs
+## State machine
 
-## Data Retention
+| Current | Allowed next | Trigger |
+|---|---|---|
+| `waiting` | `eligible`, `manual_review`, `closed` | grace expiry, escalation, original capture |
+| `eligible` | `contacted`, `manual_review`, `closed` | execution, escalation, stop rule |
+| `contacted` | `recovered`, `manual_review`, `closed` | verified link payment, contradiction, stop rule |
+| `manual_review` | `contacted`, `recovered`, `closed` | explicit operator/provider outcome |
+| `recovered` | `recovered` | terminal/idempotent |
+| `closed` | `closed` | terminal/idempotent |
 
-| Entity | Retention | Notes |
-|--------|-----------|-------|
-| RecoveryCase | 7 years | Financial audit requirement |
-| AuditEvent | 7 years | Append-only, immutable |
-| WebhookReceipt | 90 days | Idempotency window |
-| NotificationOutbox | 30 days | After sent/failed |
+## Persistence and concurrency
 
-## Failure Modes
+- `WebhookReceipt.eventKey` is unique; duplicate completed receipts return `200` and `duplicate=true`.
+- Supported event receipt, domain, audit, and outcome writes share one transaction.
+- Processing failure returns `500` with no partial state so Razorpay can retry.
+- Execution reserves a case transactionally before an external call.
+- Outbox dedupe keys and stable Payment Link references protect downstream actions.
+- Late capture updates the case and its stop/prevention audits transactionally.
+- Paid-link amount or currency contradictions go to `manual_review`, never revenue.
 
-| Scenario | Handling |
-|----------|----------|
-| Invalid webhook signature | 401 response, no persistence |
-| Missing webhook signature | 401 response, no persistence |
-| Duplicate webhook | Return original outcome, no duplicate case |
-| LLM timeout/invalid JSON | Fallback rules, audit `fallbackUsed=true` |
-| Payment Link creation fails | `provider_error` audit, retry-safe state |
-| Late capture during grace | Close case, stop recovery, audit `recovery_stopped` |
-| Concurrent execution attempt | Reservation pattern, second returns conflict |
-| Database unavailable | 500, no partial state changes (transactions) |
+SQLite is scoped to the local Buildathon implementation. Multi-instance production must use managed PostgreSQL and revalidate isolation under provider retries.
 
-## Synthetic Evaluation Boundaries
+## Trust boundaries
 
-The 60-case Phase 6 dataset is a deterministic demonstration benchmark, not a
-claim about production conversion. Identities use reserved example data,
-outcomes are predetermined outside agent-visible inputs, and every metric is
-labeled synthetic. Replay sends signed fixtures through production webhook
-ingestion, evaluates visible context with the deterministic fallback policy,
-and exercises guarded execution. A separate event plan supplies external
-outcomes such as capture, expiry, and Payment Link payment. The result
-demonstrates safety and repeatability, not an expected real-world recovery rate.
+| Boundary | Controls |
+|---|---|
+| Razorpay → webhook | Constant-time HMAC, Zod schema, stable idempotency key |
+| Server → AI | No name, email, phone, credentials, signature, or payment ID in prompt |
+| Server → Razorpay | Test mode, policy approval, stable reference, exact money fields |
+| Server → dashboard | Masked identity, redacted metadata, no secrets or link URL |
+| Dashboard → demo API | Strict seed/reset body, demo-mode gate, serialized replay |
 
-Synthetic cases and webhook receipts belong to a `DemoRun`; deleting a demo run
-cascades only through demo-owned data and preserves merchant-owned rows.
+Secrets remain server-side. Logs omit payloads, signatures, customer data, and raw errors. Customer text is sanitized again at the outbox boundary.
 
-## Production Readiness Gaps
+## Threat model
 
-- [ ] PostgreSQL instead of SQLite (concurrency, replication)
-- [ ] Authentication/authorization on dashboard
-- [ ] Scheduler for periodic eligible case evaluation (cron/queue)
-- [ ] Real notification channels (WhatsApp, SMS, Email providers)
-- [ ] Observability: structured logging, metrics, tracing
-- [ ] Rate limiting on webhook endpoint
-- [ ] Backup/restore strategy for SQLite
-- [ ] Webhook secret rotation mechanism
+| Risk | Mitigation | Production gap |
+|---|---|---|
+| Forged/replayed webhook | Signature plus unique receipt | Secret rotation runbook |
+| Duplicate collection | Grace window and late-capture stop | Provider reconciliation job |
+| Unsafe model output | Minimal prompt, schema, guardrails, fallback | Formal model red-team evaluation |
+| Concurrent action | Reservation transaction and dedupe IDs | PostgreSQL load/isolation tests |
+| Inflated revenue | Verified event and exact amount/currency | Settlement reconciliation |
+| PII leakage | Masked API, redaction, no query logging | Auth, tenant controls, retention policy |
+| Public endpoint abuse | Strict bounded schemas | Rate limiting/WAF and authentication |
+
+## Failure behavior
+
+| Failure | Behavior |
+|---|---|
+| Invalid signature | `401`, no persistence |
+| Database mutation failure | rollback and `500` |
+| Invalid/unavailable AI | audited deterministic fallback |
+| Payment Link failure | provider-error audit; no revenue |
+| Original late capture | close, stop, count duplicate prevention |
+| Paid-link amount/currency mismatch | atomic manual review and safe audits |
+| Attempt limit, opt-out, expiry | stop without another notification |
+
+## Hosted judge preview
+
+`HOSTED_DEMO_MODE=true` serves the exact versioned 60-case result from code without mutating SQLite. This keeps the Vercel dashboard reliable on an ephemeral serverless filesystem while preserving the full local persistence path. Hosted Replay resets presentation state only, remains explicitly synthetic, and returns `reused=true`.
+
+This is not the production architecture. Durable deployment requires PostgreSQL, authenticated tenant isolation, scheduler/queue, delivery worker, reconciliation, monitoring, backups, and an approved retention policy.

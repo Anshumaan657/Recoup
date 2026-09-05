@@ -18,7 +18,8 @@ const serverEnvSchema = z.object({
   RECOVERY_GRACE_SECONDS: z.coerce.number().int().positive().default(90),
   MAX_RECOVERY_ATTEMPTS: z.coerce.number().int().positive().default(1),
   ENABLE_RAZORPAY_LINKS: strictBoolean.default(false),
-  DEMO_MODE: strictBoolean.default(true),
+  DEMO_MODE: strictBoolean.default(false),
+  HOSTED_DEMO_MODE: strictBoolean.default(false),
   APPROVAL_THRESHOLD_PAISE: z.coerce.number().int().positive().default(500000),
 });
 
@@ -83,6 +84,8 @@ export const envKeys = {
     "MAX_RECOVERY_ATTEMPTS",
     "ENABLE_RAZORPAY_LINKS",
     "DEMO_MODE",
+    "HOSTED_DEMO_MODE",
+    "APPROVAL_THRESHOLD_PAISE",
   ] as const,
   client: ["NEXT_PUBLIC_APP_URL"] as const,
 } as const;

@@ -6,11 +6,22 @@ import {
   maskName,
   redactAuditMetadata,
 } from "@/lib/demo/api-view";
+import { hostedDemoDetail } from "@/lib/demo/hosted-preview";
+import { getServerEnv } from "@/lib/validation/env";
 
 export async function GET(
   _request: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  if (getServerEnv().HOSTED_DEMO_MODE) {
+    const detail = hostedDemoDetail(params.id);
+    return detail
+      ? NextResponse.json({ data: detail })
+      : NextResponse.json(
+          { status: "not_found", message: "Recovery case not found" },
+          { status: 404 }
+        );
+  }
   const recoveryCase = await prisma.recoveryCase.findUnique({
     where: { id: params.id },
     include: { auditEvents: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] } },

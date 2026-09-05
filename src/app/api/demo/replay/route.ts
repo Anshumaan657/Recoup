@@ -6,6 +6,7 @@ import {
 } from "@/lib/demo/replay";
 import { getServerEnv } from "@/lib/validation/env";
 import { demoReplayRequestSchema } from "@/lib/validation/demo";
+import { hostedDemoReplayResponse } from "@/lib/demo/hosted-preview";
 
 export async function POST(request: NextRequest) {
   if (!getServerEnv().DEMO_MODE) {
@@ -31,6 +32,10 @@ export async function POST(request: NextRequest) {
       { status: "invalid_request", message: "Use only an integer seed and boolean reset" },
       { status: 400 }
     );
+  }
+
+  if (getServerEnv().HOSTED_DEMO_MODE) {
+    return NextResponse.json(hostedDemoReplayResponse(), { status: 200 });
   }
 
   try {

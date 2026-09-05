@@ -1,0 +1,44 @@
+name: quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: file:./dev.db
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+      RAZORPAY_WEBHOOK_SECRET: ci-only-webhook-secret
+      ENABLE_RAZORPAY_LINKS: "false"
+      DEMO_MODE: "true"
+      HOSTED_DEMO_MODE: "false"
+      RECOVERY_GRACE_SECONDS: "90"
+      MAX_RECOVERY_ATTEMPTS: "1"
+      APPROVAL_THRESHOLD_PAISE: "500000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run db:generate
+      - run: npm run db:setup
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev --audit-level=critical
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e

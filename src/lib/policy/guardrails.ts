@@ -55,7 +55,7 @@ export function evaluateGuardrails(ctx: DecisionContext): GuardrailResult {
 }
 
 export function validateDecisionAgainstGuardrails(
-  decision: { action: RecoveryAction; requiresApproval: boolean },
+  decision: { action: RecoveryAction; requiresApproval: boolean; customerMessage?: string },
   ctx: DecisionContext
 ): GuardrailResult {
   const violations: string[] = [];
@@ -93,6 +93,13 @@ export function validateDecisionAgainstGuardrails(
     /bank.password/i,
     /credential/i,
   ];
+
+  if (
+    decision.customerMessage &&
+    sensitivePatterns.some((pattern) => pattern.test(decision.customerMessage!))
+  ) {
+    violations.push("Customer message contains prohibited sensitive wording");
+  }
 
   return {
     allowed: violations.length === 0,

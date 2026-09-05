@@ -1,233 +1,123 @@
-# RecoverAI — Failed-Payment Recovery Autopilot
+# Recoup — RecoverAI
 
-RecoverAI is a Razorpay Buildathon Track 3 project for Indian D2C merchants. It ingests failed-payment events, waits for late authorization, selects a bounded recovery action, creates a Razorpay test-mode Payment Link when appropriate, records an audit trail, and measures recovered revenue.
+**Failed-Payment Recovery Autopilot · Razorpay AI Buildathon · Track 3**
 
-This repository is intentionally scaffold-only. Implement it sequentially using the prompts in `docs/phases/`. Do not skip phases, and create exactly one reviewed Git commit at the end of every phase.
+Recoup turns failed Razorpay payments into bounded, auditable recovery cases for Indian D2C merchants. It verifies provider events, waits through a late-capture grace window, asks an AI agent for a structured recommendation, lets deterministic policy authorize the action, creates a test-mode Payment Link when safe, and stops recovery the moment the original payment succeeds.
 
-## Phase order
+The dashboard makes the outcome legible in one screen: revenue at risk, verified revenue recovered, recovery rate, duplicate collections prevented, case-level decisions, and a chronological audit trail.
 
-1. `01-foundation.md`
-2. `02-domain-and-database.md`
-3. `03-webhook-ingestion.md`
-4. `04-agent-and-policy.md`
-5. `05-recovery-execution.md`
-6. `06-demo-simulator.md`
-7. `07-dashboard.md`
-8. `08-quality-and-delivery.md`
+## Why it matters
 
-Read `docs/PROJECT_STRUCTURE.md` for the target layout and `docs/GIT_WORKFLOW.md` for repository rules.
+- **Revenue:** reports recovered rupees, not chatbot activity.
+- **Safety:** the model proposes; policy code controls execution, limits, approval, and stopping rules.
+- **Trust:** webhook ingestion and state changes are idempotent and transactional.
+- **Evaluation:** a versioned 60-case simulator produces a reproducible benchmark with no real customer data.
 
----
-
-## Prerequisites
-
-- Node.js 20 LTS (`.nvmrc` pinned)
-- npm 10+
-- Razorpay Test Mode account (for Phases 3+)
-
-## Quick Start
+## Five-minute local demo
 
 ```bash
-# Clone and enter
+git clone https://github.com/Anshumaan657/Recoup.git
 cd Recoup
-
-# Install dependencies
+nvm use
 npm ci
-
-# Copy environment template
 cp .env.example .env
-# Edit .env with your values (see Environment Setup below)
-
-# Generate Prisma client (Phase 2+)
 npm run db:generate
-
-# Run development server
+npm run db:setup
+npm run demo:replay
 npm run dev
 ```
 
-Visit `http://localhost:3000` — you should see "RecoverAI · Track 3 · AI Revenue Recovery" with a "Foundation ready" badge.
+Open `http://localhost:3000`. The fixed dataset reports ₹1,24,840 at risk, ₹38,280 recovered, 20 recovered cases, 8 duplicate collections prevented, and a 30.6632% rupee recovery rate. Every result is labeled **synthetic**.
 
-## Environment Setup
+For the timed presentation, use [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).
 
-Copy `.env.example` to `.env` and fill in values:
+## System flow
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes (Phase 2+) | SQLite file path, e.g. `file:./dev.db` |
-| `NEXT_PUBLIC_APP_URL` | Yes | Public URL for callbacks, e.g. `http://localhost:3000` |
-| `RAZORPAY_KEY_ID` | Phase 3+ | Test mode key from Razorpay Dashboard |
-| `RAZORPAY_KEY_SECRET` | Phase 3+ | Test mode secret from Razorpay Dashboard |
-| `RAZORPAY_WEBHOOK_SECRET` | Phase 3+ | Webhook secret from Razorpay Dashboard |
-| `AI_API_KEY` | Phase 4+ | OpenAI-compatible API key |
-| `AI_BASE_URL` | Phase 4+ | e.g. `https://api.openai.com/v1` |
-| `AI_MODEL` | Phase 4+ | e.g. `gpt-4o-mini` |
-| `RECOVERY_GRACE_SECONDS` | No | Late-capture window, default `90` |
-| `MAX_RECOVERY_ATTEMPTS` | No | Max retries per case, default `1` |
-| `ENABLE_RAZORPAY_LINKS` | No | Real Payment Links when `true`, default `false` |
-| `DEMO_MODE` | No | Enables simulator & fallbacks, default `true` |
+```mermaid
+flowchart LR
+  R[Razorpay webhook] --> V[Signature + schema validation]
+  V --> T[Atomic receipt and domain transaction]
+  T --> G[Grace window]
+  G --> A[AI recommendation]
+  A --> P{Deterministic policy}
+  P -->|approved| E[Payment Link or notification]
+  P -->|unsafe or uncertain| M[Manual review or stop]
+  E --> O[Verified outcome]
+  O --> D[Metrics + audit dashboard]
+  R -->|late original capture| S[Stop recovery immediately]
+  S --> D
+```
 
-**Demo Mode Notes:**
-- When `DEMO_MODE=true` (default), AI and Razorpay credentials are optional; deterministic fallbacks are used.
-- `ENABLE_RAZORPAY_LINKS=false` forces deterministic simulated links in demo mode.
-- `ENABLE_RAZORPAY_LINKS=true` plus test credentials calls Razorpay test-mode APIs.
-- All money actions are **TEST MODE ONLY**. No live charges ever occur.
+## Core guarantees
 
-## Available Scripts
+- HMAC-SHA256 verification before webhook processing; invalid signatures return `401`.
+- Stable provider-event or payload-hash idempotency keys.
+- Receipt, case, and audit mutations commit atomically or roll back together.
+- Amount and currency must match before recovered revenue is recorded.
+- Late capture closes an active recovery and records duplicate prevention.
+- Model output is schema-validated and checked by deterministic guardrails.
+- Missing, failed, timed-out, or unsafe model output uses an audited fallback.
+- At most one bounded notification attempt per case in this MVP.
+- Currency is stored as integer paise; demo identities are masked and synthetic.
 
-| Script | Description |
-|--------|-------------|
-| `npm run dev` | Start Next.js dev server |
-| `npm run build` | Production build |
-| `npm run start` | Run production server |
-| `npm run lint` | ESLint check |
-| `npm run typecheck` | TypeScript strict check |
-| `npm run test` | Unit/integration tests (Vitest) |
-| `npm run test:watch` | Watch mode tests |
-| `npm run test:coverage` | Coverage report |
-| `npm run test:e2e` | End-to-end tests (Playwright) |
+## API
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/webhooks/razorpay` | Verify and ingest supported Razorpay events |
+| `POST` | `/api/demo/replay` | Run or reuse the seeded 60-case evaluation |
+| `GET` | `/api/recoveries` | List masked recovery summaries |
+| `GET` | `/api/recoveries/:id` | Read one masked case and audit timeline |
+| `GET` | `/api/metrics` | Read latest synthetic totals |
+
+## Configuration
+
+Copy `.env.example` to `.env`. Boolean parsing accepts only `true` or `false`.
+
+| Variable | Default | Use |
+|---|---:|---|
+| `DATABASE_URL` | required | SQLite URL for local development |
+| `NEXT_PUBLIC_APP_URL` | `http://localhost:3000` | Public application origin |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | unset | Razorpay **test-mode** Payment Links |
+| `RAZORPAY_WEBHOOK_SECRET` | unset | Webhook signature verification |
+| `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` | unset | Optional OpenAI-compatible advisory model |
+| `RECOVERY_GRACE_SECONDS` | `90` | Late-capture waiting window |
+| `MAX_RECOVERY_ATTEMPTS` | `1` | Bounded attempts per case |
+| `APPROVAL_THRESHOLD_PAISE` | `500000` | Manual-review threshold |
+| `ENABLE_RAZORPAY_LINKS` | `false` | Enable test-mode provider link creation |
+| `DEMO_MODE` | `false` | Enable simulator and simulated execution |
+| `HOSTED_DEMO_MODE` | `false` | Read-only deterministic serverless preview |
+
+Never commit `.env` or provider credentials. Keep Payment Links disabled until test credentials and webhook configuration are verified.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `npm run dev` | Start development server |
 | `npm run db:generate` | Generate Prisma client |
-| `npm run db:migrate` | Run migrations |
-| `npm run db:seed` | Seed database |
-| `npm run demo:replay` | Run 60-case evaluation (Phase 6) |
-| `npm run demo:reset` | Reset demo data (Phase 6) |
+| `npm run db:setup` | Initialize local SQLite and apply committed migrations |
+| `npm run db:migrate` | Create/apply a local migration |
+| `npm run demo:replay` | Execute deterministic benchmark |
+| `npm run demo:reset` | Remove synthetic demo-owned rows only |
+| `npm run typecheck` | Strict TypeScript check |
+| `npm run lint` | ESLint check |
+| `npm test` | Reset protected test DB and run Vitest |
+| `npm run test:e2e` | Desktop and mobile Playwright journeys |
+| `npm run build` | Production Next.js build |
 
-## Architecture Overview
+## Deployment modes
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│  Razorpay   │────▶│  Webhook     │────▶│  Recovery Case  │
-│  Webhooks   │     │  Ingestion   │     │  State Machine  │
-└─────────────┘     └──────────────┘     └────────┬────────┘
-                                                   │
-                    ┌──────────────┐     ┌────────▼────────┐
-                    │  Merchant    │◀────│  Recovery Agent │
-                    │  Dashboard   │     │  + Policy       │
-                    └──────────────┘     └────────┬────────┘
-                                                   │
-                    ┌──────────────┐     ┌────────▼────────┐
-                    │  Audit Trail │◀────│  Execution      │
-                    │  & Metrics   │     │  (Payment Link) │
-                    └──────────────┘     └─────────────────┘
-```
+The public Vercel build uses `HOSTED_DEMO_MODE=true`: a read-only deterministic judge preview with no claim of durable serverless SQLite persistence. The complete webhook → database → policy → execution workflow runs locally with committed migrations and Razorpay test mode.
 
-Key invariants:
-- **Signature verification** on every webhook (HMAC-SHA256)
-- **Idempotency** via `WebhookReceipt` table
-- **Grace period** prevents action before late authorization
-- **LLM proposes, policy authorizes** — model never executes
-- **At most one notification/action** per case (MVP)
-- **Integer paise** for all amounts
-- **Demo results labeled synthetic** and reproducible
+Before a production pilot, replace SQLite with managed PostgreSQL, add authentication and merchant isolation, add a durable scheduler/outbox worker, configure rate limiting and observability, and approve a retention policy. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Recovery Execution
+## Quality and evidence
 
-Phase 5 executes only policy-approved cases in the `eligible` state. The executor
-atomically reserves a case before calling Razorpay, uses an idempotent
-`reference_id`, queues no more than one sanitized notification, and records every
-outcome in the audit timeline. Provider failures never record recovered revenue.
-Late capture closes the case and cancels pending notification delivery.
+The release gate runs generation, typecheck, lint, unit/integration tests, a production build, Playwright on desktop and mobile, formatting checks, and a critical-vulnerability audit. CI lives in `.github/workflows/ci.yml`.
 
-## Razorpay Test Mode Webhook Setup
-
-1. Create a test-mode webhook in Razorpay Dashboard → Webhooks
-2. URL: `https://your-domain/webhooks/razorpay`
-3. Events: `payment.failed`, `payment.captured`, `payment_link.paid`
-4. Copy signing secret to `RAZORPAY_WEBHOOK_SECRET`
-5. For local dev, use ngrok: `ngrok http 3000`
-
-## Webhook Signature Verification
-
-- Invalid or missing `X-Razorpay-Signature` header returns HTTP 401
-- Signature verified using HMAC-SHA256 with `RAZORPAY_WEBHOOK_SECRET`
-- Verification uses constant-time comparison to prevent timing attacks
-
-## Supported Events
-
-| Event | Purpose |
-|-------|---------|
-| `payment.failed` | Create recovery case, start grace period |
-| `payment.captured` | Late capture — close case, stop recovery |
-| `payment_link.paid` | Mark case recovered, record revenue |
-
-## API Summary
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/webhooks/razorpay` | Ingest Razorpay webhooks |
-| `GET` | `/api/recoveries` | List recovery cases |
-| `GET` | `/api/recoveries/:id` | Case detail with audit timeline |
-| `GET` | `/api/metrics` | Revenue metrics |
-| `POST` | `/api/demo/replay` | Run 60-case evaluation (demo only) |
-
-## Metric Definitions
-
-| Metric | Definition |
-|--------|------------|
-| `attempted` | Cases where recovery action was taken |
-| `contacted` | Cases where customer was notified |
-| `recovered` | Cases with verified payment link payment |
-| `stopped` | Late-capture or unrecoverable cases stopped before recovery; expired attempted links remain attempted-but-not-recovered |
-| `manualReview` | Cases escalated for human review |
-| `duplicatesPrevented` | Late captures that stopped duplicate charges |
-| `totalAtRiskPaise` | Sum of original failed payment amounts |
-| `recoveredPaise` | Sum of verified recovered amounts |
-| `recoveryRate` | `recoveredPaise / totalAtRiskPaise` |
-
-## Deterministic Demo Evaluation
-
-The Phase 6 benchmark contains exactly 60 versioned synthetic cases. It never
-uses real customer data, sends external notifications, or creates a live payment
-action. Apply migrations and replay the fixed dataset with one command:
-
-```bash
-npx prisma migrate deploy
-npm run demo:replay
-```
-
-The default seed always produces ₹1,24,840 at risk, ₹38,280 recovered, 20
-recovered cases, 8 duplicate collections prevented by late capture, and a
-30.6632% rupee recovery rate. Results are labeled `synthetic`, and
-`npm run demo:reset` deletes only rows owned by synthetic demo runs.
-
-Demo APIs:
-
-- `POST /api/demo/replay` accepts only optional `{ "seed": 20260905, "reset": true }`.
-- `GET /api/metrics` returns the latest completed synthetic run.
-- `GET /api/recoveries?synthetic=true` returns masked recovery summaries.
-- `GET /api/recoveries/:id` returns one masked case and its audit timeline.
-
-## Test Commands
-
-```bash
-# All quality gates
-npm run typecheck && npm run lint && npm test && npm run build
-
-# With coverage
-npm run test:coverage
-
-# E2E (requires dev server)
-npm run dev & npm run test:e2e
-```
-
-## Limitations
-
-- **Test mode only** — no live money movement
-- **Single notification channel** — email/SMS stubbed via outbox
-- **No authentication** — dashboard is open (add auth for production)
-- **SQLite** — single-node; use Postgres for production
-- **No scheduler** — demo uses manual replay; add cron for production
-- **Synthetic data** — demo metrics are deterministic, not real merchant data
-
-## Troubleshooting
-
-| Issue | Fix |
-|-------|-----|
-| `npm ci` fails | Ensure Node 20 (`nvm use`) |
-| `prisma generate` fails | Run `npm run db:generate` after install |
-| Webhook signature invalid | Check `RAZORPAY_WEBHOOK_SECRET` matches Dashboard |
-| AI fallback always used | Set `AI_API_KEY` and `AI_BASE_URL` |
-| Port 3000 in use | `lsof -ti:3000 \| xargs kill` |
+The synthetic benchmark demonstrates deterministic behavior and safety controls—not forecast merchant conversion.
 
 ## License
 
-MIT — Built for Razorpay Buildathon Track 3.
+MIT. Built for Razorpay AI Buildathon Track 3: AI Revenue Recovery.

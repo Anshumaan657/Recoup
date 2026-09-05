@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { RecoveryMetrics } from "@/lib/recovery/metrics";
+import { hostedDemoMetricsResponse } from "@/lib/demo/hosted-preview";
+import { getServerEnv } from "@/lib/validation/env";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +22,9 @@ const EMPTY_METRICS: RecoveryMetrics = {
 };
 
 export async function GET() {
+  if (getServerEnv().HOSTED_DEMO_MODE) {
+    return NextResponse.json(hostedDemoMetricsResponse());
+  }
   const run = await prisma.demoRun.findFirst({
     where: { synthetic: true, status: "completed", resultMetrics: { not: null } },
     orderBy: { completedAt: "desc" },

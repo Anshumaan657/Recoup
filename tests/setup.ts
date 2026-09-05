@@ -7,6 +7,7 @@ process.env.NEXT_PUBLIC_APP_URL = "http://localhost:3000";
 process.env.RAZORPAY_WEBHOOK_SECRET = "recoverai-test-only-webhook-secret";
 process.env.ENABLE_RAZORPAY_LINKS = "false";
 process.env.DEMO_MODE = "true";
+process.env.HOSTED_DEMO_MODE = "false";
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,

@@ -173,4 +173,30 @@ describe("Phase 6 demo APIs", () => {
       ).status
     ).toBe(404);
   });
+
+  it("serves the deterministic read-only hosted preview without database state", async () => {
+    process.env.HOSTED_DEMO_MODE = "true";
+    resetServerEnvCache();
+
+    const metrics = await (await metricsGet()).json();
+    expect(metrics).toMatchObject({
+      synthetic: true,
+      totalCases: 60,
+      recoveredPaise: 3_828_000,
+      duplicatesPrevented: 8,
+    });
+
+    const response = await recoveriesGet(
+      new NextRequest("http://localhost:3000/api/recoveries?status=recovered&limit=5")
+    );
+    const list = await response.json();
+    expect(response.status).toBe(200);
+    expect(list.data).toHaveLength(5);
+    expect(list.pagination.total).toBe(20);
+
+    const replay = await (await replayPost(replayRequest({ reset: true }))).json();
+    expect(replay).toMatchObject({ status: "completed", reused: true, synthetic: true });
+    expect(await prisma.recoveryCase.count()).toBe(0);
+    expect(await prisma.demoRun.count()).toBe(0);
+  });
 });

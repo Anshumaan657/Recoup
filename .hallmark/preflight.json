@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-09-05T00:00:00+05:30",
+  "framework": "Next.js 14 App Router with React 18 and plain CSS",
+  "existingSystem": {
+    "tokens": "Legacy semantic color variables in src/app/globals.css",
+    "typography": "System sans stack",
+    "components": "Stat cards, operations strip, recovery table/cards, detail sheet",
+    "motion": "CSS-only functional spinner, skeleton, backdrop, and sheet transitions"
+  },
+  "constraints": [
+    "Preserve the existing navy/cyan identity and dashboard behavior",
+    "Keep all actions explicit and accessible",
+    "Avoid decorative imagery in an operations-heavy interface"
+  ],
+  "decision": "Consolidate visual primitives into OKLCH tokens, strengthen type roles, and retain the established information architecture."
+}

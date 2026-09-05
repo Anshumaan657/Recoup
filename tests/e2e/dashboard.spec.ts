@@ -23,3 +23,18 @@ test("replays, filters, and inspects a recovery audit", async ({ page }) => {
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 });
+
+test("has no horizontal overflow across supported viewport boundaries", async ({ page }) => {
+  for (const width of [320, 375, 414, 768, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Recovery command center" })).toBeVisible();
+    const dimensions = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      content: document.documentElement.scrollWidth,
+    }));
+    expect(dimensions.content, `overflow at ${width}px`).toBeLessThanOrEqual(
+      dimensions.viewport
+    );
+  }
+});

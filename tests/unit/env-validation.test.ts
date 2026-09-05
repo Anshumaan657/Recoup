@@ -37,12 +37,26 @@ describe("Strict Boolean Environment Parsing", () => {
   });
 
   it("uses defaults when values are missing", () => {
+    delete process.env.ENABLE_RAZORPAY_LINKS;
+    delete process.env.DEMO_MODE;
+    delete process.env.HOSTED_DEMO_MODE;
     process.env.DATABASE_URL = TEST_DATABASE_URL;
     process.env.NEXT_PUBLIC_APP_URL = "http://localhost:3000";
 
     const env = getServerEnv();
     expect(env.ENABLE_RAZORPAY_LINKS).toBe(false);
-    expect(env.DEMO_MODE).toBe(true);
+    expect(env.DEMO_MODE).toBe(false);
+    expect(env.HOSTED_DEMO_MODE).toBe(false);
+  });
+
+  it("strictly parses hosted demo mode", () => {
+    process.env.DATABASE_URL = TEST_DATABASE_URL;
+    process.env.HOSTED_DEMO_MODE = "true";
+    expect(getServerEnv().HOSTED_DEMO_MODE).toBe(true);
+
+    resetServerEnvCache();
+    process.env.HOSTED_DEMO_MODE = "preview";
+    expect(() => getServerEnv()).toThrow("Invalid server environment");
   });
 
   it("rejects invalid string values like 'yes'", () => {

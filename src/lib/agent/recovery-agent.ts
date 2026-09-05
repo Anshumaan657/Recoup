@@ -26,7 +26,6 @@ function buildPrompt(ctx: DecisionContext): string {
   return `You are a recovery decision agent for failed payments. Analyze the case and return a JSON decision.
 
 Case Context:
-- Payment ID: ${ctx.originalPaymentId}
 - Amount: ${ctx.amount} ${ctx.currency}
 - Failure Code: ${ctx.failureCode ?? "unknown"}
 - Failure Reason: ${ctx.failureReason ?? "unknown"}
@@ -98,17 +97,6 @@ async function callLLM(config: AgentConfig, prompt: string): Promise<string> {
   }
 }
 
-function sanitizeForLogging(obj: Record<string, unknown>): Record<string, unknown> {
-  const sanitized = { ...obj };
-  const sensitiveKeys = ["apiKey", "secret", "password", "token", "key"];
-  for (const key of Object.keys(sanitized)) {
-    if (sensitiveKeys.some((k) => key.toLowerCase().includes(k))) {
-      sanitized[key] = "[REDACTED]";
-    }
-  }
-  return sanitized;
-}
-
 export async function proposeRecoveryDecision(ctx: DecisionContext): Promise<RecoveryDecision> {
   const config = getAgentConfig();
 
@@ -136,29 +124,13 @@ export async function proposeRecoveryDecision(ctx: DecisionContext): Promise<Rec
       fallbackUsed: false,
       modelMetadata: { model: config.model, provider: "llm" },
     };
-  } catch (error) {
+  } catch {
     return fallbackDecision(ctx);
   }
 }
 
-function createRedactedContext(ctx: DecisionContext): Record<string, unknown> {
-  return {
-    caseId: ctx.caseId,
-    amount: ctx.amount,
-    currency: ctx.currency,
-    failureCode: ctx.failureCode,
-    failureSource: ctx.failureSource,
-    failureStep: ctx.failureStep,
-    paymentMethod: ctx.paymentMethod,
-    attemptCount: ctx.attemptCount,
-    graceExpired: ctx.graceExpired,
-    hasEmail: ctx.hasEmail,
-    hasContact: ctx.hasContact,
-  };
-}
-
 export async function evaluateCaseWithAgent(
-  caseId: string,
+  _caseId: string,
   ctx: DecisionContext
 ): Promise<RecoveryDecision> {
   const decision = await proposeRecoveryDecision(ctx);

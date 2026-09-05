@@ -3,6 +3,8 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { maskContact, maskEmail, maskName } from "@/lib/demo/api-view";
 import { RecoveryAction, RecoveryStatus } from "@/types/domain";
+import { HOSTED_DEMO_CASES } from "@/lib/demo/hosted-preview";
+import { getServerEnv } from "@/lib/validation/env";
 
 const querySchema = z.object({
   status: z.nativeEnum(RecoveryStatus).optional(),
@@ -22,6 +24,17 @@ export async function GET(request: NextRequest) {
     );
   }
   const { status, action, synthetic, limit, offset } = parsed.data;
+  if (getServerEnv().HOSTED_DEMO_MODE) {
+    const filtered = HOSTED_DEMO_CASES.filter((item) =>
+      (!status || item.status === status) &&
+      (!action || item.selectedAction === action) &&
+      (!synthetic || item.synthetic === (synthetic === "true"))
+    ).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return NextResponse.json({
+      data: filtered.slice(offset, offset + limit),
+      pagination: { total: filtered.length, limit, offset },
+    });
+  }
   const where = {
     ...(status ? { status } : {}),
     ...(action ? { selectedAction: action } : {}),

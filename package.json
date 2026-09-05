@@ -13,6 +13,7 @@
     "test:coverage": "tsx tests/setup-test-db.ts && vitest run --coverage",
     "test:e2e": "playwright test",
     "db:generate": "prisma generate",
+    "db:setup": "tsx scripts/setup-database.ts",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "demo:replay": "tsx scripts/replay-demo.ts",
@@ -52,6 +53,6 @@
     "tsx": "^4.19.1"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "20.x"
   }
 }
